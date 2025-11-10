@@ -1,0 +1,32 @@
+{
+  "name": "cv2x-testbed",
+  "version": "2.0.0",
+  "description": "Research-grade CV2X testbed with DID/SSI integration",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js",
+    "deploy:localhost": "hardhat run scripts/deploy.js --network localhost"
+  },
+  "keywords": [
+    "cv2x",
+    "v2x",
+    "did",
+    "ssi",
+    "blockchain",
+    "ethereum",
+    "erc1056"
+  ],
+  "author": "CVIN Research Lab",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "ethers": "^6.9.0"
+  }
+}
