@@ -1,0 +1,17 @@
+# Ethereum DID Registry
+
+
+### Ethereum DID Registry
+
+#### Overview
+The Ethereum DID Registry contract is a core component of the ERC-1056 standard, responsible for managing Decentralized Identifiers (DIDs) on the Ethereum blockchain. This smart contract handles the creation, updating, and deactivation of DIDs, as well as the management of associated attributes and key rotations.
+
+#### Key Functions
+1. **createDID**: Allows for the registration of a new DID by generating a unique identifier based on the owner's address and timestamp.
+2. **setAttribute**: Enables the addition of attributes to a DID, such as vehicle information.
+3. **removeAttribute**: Allows for the removal of attributes associated with a DID.
+4. **rotateKey**: Facilitates the secure rotation of keys linked to a DID, enhancing security.
+
+#### Role in ERC-1056
+This contract provides the foundational layer for managing DIDs, ensuring their immutability and security on the blockchain. It directly supports the key features of ERC-1056, such as DID creation and management, attribute handling, and key rotation.
+
