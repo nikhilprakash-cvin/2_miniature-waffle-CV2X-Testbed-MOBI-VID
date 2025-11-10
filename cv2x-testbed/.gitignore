@@ -1,0 +1,40 @@
+# Node modules
+node_modules/
+
+# Hardhat files
+cache/
+artifacts/build-info/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment info (keep in deployments/)
+# deployments/ folder is intentionally tracked
