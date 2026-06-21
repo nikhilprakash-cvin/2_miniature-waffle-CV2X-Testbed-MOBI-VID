@@ -1,0 +1,115 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # Run benchmarks daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  benchmark-blockchain:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      working-directory: 1_blockchain-identity
+      run: npm ci
+
+    - name: Run gas benchmarks
+      working-directory: 1_blockchain-identity
+      run: |
+        echo "# Thesis Performance Benchmarks" > ../4_comparison-framework/results/gas-benchmarks.md
+        echo "Generated: $(date -u)" >> ../4_comparison-framework/results/gas-benchmarks.md
+        echo "" >> ../4_comparison-framework/results/gas-benchmarks.md
+        REPORT_GAS=true npx hardhat test >> ../4_comparison-framework/results/gas-benchmarks.md
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: gas-benchmarks
+        path: 4_comparison-framework/results/gas-benchmarks.md
+
+  benchmark-did-resolution:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install -r 2_w3c-ssi-layer/requirements.txt || echo "No requirements.txt yet"
+
+    - name: Benchmark DID resolution
+      run: |
+        cd 2_w3c-ssi-layer/did-resolution
+        python3 benchmark_did_resolver.py > ../../4_comparison-framework/results/did-resolution-benchmarks.txt
+
+    - name: Upload DID benchmarks
+      uses: actions/upload-artifact@v3
+      with:
+        name: did-resolution-benchmarks
+        path: 4_comparison-framework/results/did-resolution-benchmarks.txt
+
+  benchmark-vc-operations:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Benchmark VC issuance/verification
+      run: |
+        cd 2_w3c-ssi-layer/verifiable-credentials
+        python3 benchmark_vc.py > ../../4_comparison-framework/results/vc-benchmarks.txt || echo "Script not yet created"
+
+    - name: Upload VC benchmarks
+      uses: actions/upload-artifact@v3
+      with:
+        name: vc-benchmarks
+        path: 4_comparison-framework/results/vc-benchmarks.txt
+
+  generate-comparison-report:
+    needs: [benchmark-blockchain, benchmark-did-resolution, benchmark-vc-operations]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Download all benchmarks
+      uses: actions/download-artifact@v3
+
+    - name: Generate thesis comparison tables
+      run: |
+        cd 4_comparison-framework
+        python3 generate_thesis_tables.py || echo "Script not yet created"
+
+    - name: Commit updated results
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add 4_comparison-framework/results/
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update thesis benchmarks [skip ci]"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}

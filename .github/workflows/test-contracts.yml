@@ -1,0 +1,72 @@
+name: Smart Contract Tests
+
+on:
+  push:
+    branches: [ main, claude/** ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-erc-standards:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        standard: [ERC721, ERC725, ERC735, ERC1056, ERC1155]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 1_blockchain-identity/package-lock.json
+
+    - name: Install dependencies
+      working-directory: 1_blockchain-identity
+      run: npm ci
+
+    - name: Compile contracts
+      working-directory: 1_blockchain-identity
+      run: npx hardhat compile
+
+    - name: Run ${{ matrix.standard }} tests
+      working-directory: 1_blockchain-identity
+      run: npx hardhat test test/${{ matrix.standard }}*.js
+
+    - name: Gas report
+      working-directory: 1_blockchain-identity
+      run: REPORT_GAS=true npx hardhat test
+
+    - name: Upload gas report
+      uses: actions/upload-artifact@v3
+      with:
+        name: gas-report-${{ matrix.standard }}
+        path: 1_blockchain-identity/gas-report.txt
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      working-directory: 1_blockchain-identity
+      run: npm ci
+
+    - name: Run coverage
+      working-directory: 1_blockchain-identity
+      run: npx hardhat coverage
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: 1_blockchain-identity/coverage/lcov.info
+        flags: smart-contracts
