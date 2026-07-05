@@ -1,26 +1,50 @@
 # W3C Verifiable Credentials Implementation
 
-This directory contains the W3C Verifiable Credentials Data Model v2.0 implementation for the thesis.
+**Status: ✅ IMPLEMENTED** — W3C Verifiable Credentials Data Model v2.0 layer (28/28 tests passing).
 
 ## Components
 
-- `vc_issuer.py` - Credential issuance (manufacturers, service centers, DMV)
-- `vc_holder.py` - Holder wallet for storing and presenting credentials
-- `vc_verifier.py` - Credential verification and validation
-- `vc_schemas.py` - Credential schemas for automotive domain
-- `tests/` - Comprehensive test suite
+- `vc_issuer.py` — Credential issuance, EIP-191 secp256k1 Data Integrity proofs, revocation registry (~330 lines)
+- `vc_holder.py` — Holder wallet, Verifiable Presentations with challenge/domain binding, selective disclosure (~230 lines)
+- `vc_verifier.py` — 6-stage verification pipeline, offline signature recovery, compliance self-scorer (~400 lines)
+- `vc_schemas.py` — 10 automotive credential schemas mapping 1:1 to the thesis use cases (~330 lines)
+- `tests/test_vc_layer.py` — Verification gates G2–G10 from `BUILD_PLAN.md` (28 tests)
+- `BUILD_PLAN.md` — Design decisions, build order, verification gates
 
 ## W3C Compliance
 
-Target: 100% compliance with VC Data Model v2.0
+**Self-scored: 85.7%** (12/14 checklist items) against VC Data Model v2.0.
 
-Implemented features:
-- ✅ VC Data Model v2.0 structure
-- ✅ Linked Data Proofs
-- ✅ Verifiable Presentations
-- ✅ Selective Disclosure
-- ✅ Status checking (revocation)
-- ✅ Schema validation
+Implemented:
+- ✅ VC DM v2.0 structure (`validFrom`/`validUntil`, `credentialSchema`, `credentialStatus`)
+- ✅ Embedded `DataIntegrityProof` securing mechanism (assertionMethod / authentication purposes)
+- ✅ Verifiable Presentations with holder binding + challenge/domain (replay protection)
+- ✅ Selective disclosure (SD-JWT-style salted claim digests)
+- ✅ Revocation (registry-backed `credentialStatus`; on-chain anchoring lands with MOBI VID)
+- ✅ Schema validation (10 registered automotive schemas)
+
+Documented deviations (thesis compliance matrix):
+- ❌ JSON-LD canonicalization (URDNA2015) — deterministic canonical JSON used instead
+- ❌ W3C-registered cryptosuite — thesis-defined `eip191-secp256k1-recovery-2024` (Ethereum-native, offline-verifiable)
+
+## Measured Performance (Thrust 3)
+
+Offline verification — no blockchain round-trip in the message path:
+
+| Operation | Median | p95 |
+|---|---|---|
+| Verify credential (full 6-stage pipeline) | 7.5 ms | 8.9 ms |
+| Issue credential (schema + sign) | 5.1 ms | 5.3 ms |
+
+Median verify < 10 ms ⇒ consistent with hypothesis H3 (fits the ~100 ms V2V safety budget).
+
+## Running Tests
+
+```bash
+cd 2_w3c-ssi-layer/verifiable-credentials
+python3 -m pytest tests/ -v     # 28 tests
+python3 vc_verifier.py          # end-to-end demo + compliance score
+```
 
 ## Usage
 

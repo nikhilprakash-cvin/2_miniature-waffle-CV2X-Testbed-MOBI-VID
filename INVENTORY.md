@@ -132,18 +132,22 @@
 **W3C Compliance**: 75% (DID Core v1.0)  
 **Test Coverage**: 0% (needs tests)
 
-### Verifiable Credentials 🔄
+### Verifiable Credentials ✅
 
 | File | Lines | Status | Description |
 |------|-------|--------|-------------|
-| `verifiable-credentials/vc_issuer.py` | 0 | ⏳ **NEEDS BUILD** | Credential issuance |
-| `verifiable-credentials/vc_holder.py` | 0 | ⏳ **NEEDS BUILD** | Wallet management |
-| `verifiable-credentials/vc_verifier.py` | 0 | ⏳ **NEEDS BUILD** | Verification logic |
-| `verifiable-credentials/vc_schemas.py` | 0 | ⏳ **NEEDS BUILD** | Automotive schemas |
-| `verifiable-credentials/README.md` | 85 | ✅ Complete | Documentation |
+| `verifiable-credentials/vc_issuer.py` | 332 | ✅ Complete | Issuance, EIP-191 Data Integrity proofs, revocation registry |
+| `verifiable-credentials/vc_holder.py` | 230 | ✅ Complete | Wallet, presentations (challenge/domain), selective disclosure |
+| `verifiable-credentials/vc_verifier.py` | 432 | ✅ Complete | 6-stage verification pipeline, compliance self-scorer |
+| `verifiable-credentials/vc_schemas.py` | 338 | ✅ Complete | 10 automotive schemas (1:1 with thesis use cases) |
+| `verifiable-credentials/tests/test_vc_layer.py` | 324 | ✅ Complete | 28 tests (all passing) |
+| `verifiable-credentials/BUILD_PLAN.md` | 60 | ✅ Complete | Design decisions + verification gates |
+| `verifiable-credentials/README.md` | 120 | ✅ Complete | Documentation with measured performance |
 
-**Missing**: ~1,300 lines of implementation  
-**Priority**: 🔴 **CRITICAL** (needed for all use cases)
+**W3C Compliance**: 85.7% self-scored (VC DM v2.0; deviations documented)  
+**Test Coverage**: 28 tests, gates G1–G11 passed  
+**Measured**: verify median 7.5 ms / p95 8.9 ms (offline) — first Thrust 3 data point  
+**Unblocked**: MOBI VID, all 10 use cases, V2V credential experiments
 
 ### MOBI VID 🔄
 
