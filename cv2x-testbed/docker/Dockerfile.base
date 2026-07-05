@@ -1,0 +1,39 @@
+# Base image for CV2X testbed components
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install essential packages
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    python3 \
+    python3-pip \
+    python3-dev \
+    libssl-dev \
+    libboost-all-dev \
+    wget \
+    curl \
+    vim \
+    net-tools \
+    iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip3 install --no-cache-dir \
+    numpy \
+    scipy \
+    matplotlib \
+    pandas \
+    cryptography \
+    ecdsa \
+    web3 \
+    pycryptodome \
+    requests
+
+# Set working directory
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

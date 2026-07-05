@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SUMO Configuration File -->
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="highway_intersection.net.xml"/>
+        <route-files value="routes.rou.xml"/>
+    </input>
+
+    <time>
+        <begin value="0"/>
+        <end value="300"/>  <!-- 5 minutes simulation -->
+        <step-length value="0.1"/>  <!-- 100ms timestep -->
+    </time>
+
+    <processing>
+        <time-to-teleport value="-1"/>  <!-- Disable teleporting -->
+        <collision.action value="warn"/>
+        <collision.mingap-factor value="0.0"/>
+    </processing>
+
+    <routing>
+        <device.rerouting.probability value="0.0"/>
+    </routing>
+
+    <report>
+        <verbose value="true"/>
+        <no-step-log value="false"/>
+        <duration-log.statistics value="true"/>
+    </report>
+
+    <gui_only>
+        <start value="true"/>
+        <quit-on-end value="false"/>
+    </gui_only>
+
+</configuration>
