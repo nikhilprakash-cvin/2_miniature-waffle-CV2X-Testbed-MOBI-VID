@@ -26,7 +26,7 @@ from typing import Dict, Tuple, Optional, Any
 from datetime import datetime, timedelta
 from eth_account import Account
 from web3 import Web3
-from web3.middleware import geth_poa_middleware
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -63,7 +63,7 @@ class MOBIVIDProvider(IdentityProvider):
 
         # Add PoA middleware for some chains
         try:
-            self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         except:
             pass
 
@@ -333,7 +333,7 @@ class MOBIVIDProvider(IdentityProvider):
 
             # Sign and send
             signed = self.account.sign_transaction(transaction)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
             # Wait for confirmation
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -542,7 +542,7 @@ class MOBIVIDProvider(IdentityProvider):
             })
 
             signed = self.account.sign_transaction(transaction)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
 
             if vehicle_identity in self.vehicles:
@@ -699,7 +699,7 @@ class MOBIVIDProvider(IdentityProvider):
 
         # Sign and send
         signed = self.account.sign_transaction(transaction)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
         print(f"Transaction sent: {tx_hash.hex()}")
         print("Waiting for confirmation...")

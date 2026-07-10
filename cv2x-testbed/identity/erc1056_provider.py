@@ -18,7 +18,7 @@ from typing import Dict, Tuple, Optional
 from datetime import datetime, timedelta
 from eth_account import Account
 from web3 import Web3
-from web3.middleware import geth_poa_middleware
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -53,7 +53,7 @@ class ERC1056Provider(IdentityProvider):
 
         # Add PoA middleware for some chains (Ganache, etc.)
         try:
-            self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         except:
             pass
 
@@ -79,6 +79,10 @@ class ERC1056Provider(IdentityProvider):
         # Local storage (for performance)
         self.vehicles = {}  # vehicle_id -> vehicle data
         self.did_cache = {}  # DID -> resolved document (TTL cache)
+        # address (lowercase) -> uncompressed secp256k1 public key hex (no 0x prefix).
+        # Populated at registration time; used by resolve_identity_from_address()
+        # until on-chain event-based key resolution is implemented.
+        self.address_to_public_key = {}
 
         # Update metrics
         self.metrics.signature_algorithm = "ECDSA-secp256k1"
@@ -188,7 +192,7 @@ class ERC1056Provider(IdentityProvider):
 
         # Sign and send
         signed = self.account.sign_transaction(transaction)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
         # Wait for receipt
         print(f"Transaction sent: {tx_hash.hex()}")
@@ -243,7 +247,7 @@ class ERC1056Provider(IdentityProvider):
 
         # Sign and send
         signed = self.account.sign_transaction(transaction)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
         # Wait for confirmation
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -269,6 +273,10 @@ class ERC1056Provider(IdentityProvider):
             'tx_hash': tx_hash.hex(),
             'block_number': receipt.blockNumber
         }
+
+        # Cache the real public key by address so resolution/verification works.
+        # The same key bytes were submitted on-chain via registerVehicle().
+        self.address_to_public_key[vehicle_address.lower()] = public_key_bytes.hex()
 
         # Create credential
         credential = VehicleCredential(
@@ -419,7 +427,7 @@ class ERC1056Provider(IdentityProvider):
 
         # Sign and send
         signed = self.account.sign_transaction(transaction)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
         # Wait for confirmation
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -498,7 +506,20 @@ class ERC1056Provider(IdentityProvider):
         return self.resolve_identity_from_address(vehicle_address)
 
     def resolve_identity_from_address(self, address: str) -> Tuple[Optional[Dict], float]:
-        """Resolve identity from Ethereum address"""
+        """
+        Resolve identity from Ethereum address.
+
+        The on-chain registry state (owner, revocation status) is read from
+        the contract. The vehicle's public key is returned from the provider's
+        local registration cache, which holds the same key bytes that were
+        submitted on-chain via registerVehicle().
+
+        Note: Full on-chain resolution of the public key by replaying
+        registry events (per the ERC-1056 / did:ethr resolution algorithm)
+        is future work. Until then, addresses that were not registered
+        through this provider instance cannot be resolved and this method
+        returns (None, elapsed_ms).
+        """
         start_time = time.time()
 
         try:
@@ -507,15 +528,23 @@ class ERC1056Provider(IdentityProvider):
                 Web3.to_checksum_address(address)
             ).call()
 
-            # In full implementation, we'd parse events to build DID document
-            # For now, return basic info
+            # Look up the real public key from the local registration cache.
+            public_key_hex = self.address_to_public_key.get(address.lower())
+            if public_key_hex is None:
+                print(
+                    f"Resolution error: no public key known for address {address}. "
+                    "On-chain event-based key resolution is not implemented yet; "
+                    "only vehicles registered through this provider instance can be resolved."
+                )
+                return None, (time.time() - start_time) * 1000
+
             identity_data = {
                 'address': address,
                 'owner': owner,
                 'last_changed': last_changed,
                 'is_revoked': is_revoked,
                 'revoked_at': revoked_at,
-                'public_key': "0x04..."  # Would be resolved from events
+                'public_key': public_key_hex
             }
 
             elapsed = (time.time() - start_time) * 1000
