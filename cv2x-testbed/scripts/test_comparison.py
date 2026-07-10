@@ -287,14 +287,17 @@ class IdentitySystemComparison:
             except Exception as e:
                 print(f"     ❌ Failed: {e}")
 
-            # Blockchain
-            print("  🔗 Blockchain:")
+            # Blockchain — ESTIMATES ONLY. These values are illustrative
+            # public-mainnet assumptions, NOT measurements. For real measured
+            # gas across 4 standards see
+            # 4_comparison-framework/results/gas_benchmark.json
+            # (npx hardhat run scripts/benchmark_gas.js in 1_blockchain-identity).
+            print("  🔗 Blockchain [ESTIMATE — not measured in this script]:")
             print(f"     ⏳ Would register on blockchain")
-            print(f"     💰 Estimated cost: ~$5 (gas)")
-            print(f"     ⏱️  Estimated time: ~5000ms (block confirmation)")
+            print(f"     💰 Assumed cost: ~$5 (public-mainnet gas assumption)")
+            print(f"     ⏱️  Assumed time: ~5000ms (block confirmation assumption)")
 
-            # Simulate blockchain metrics
-            self.metrics['blockchain']['registrations'].append(5000.0)
+            self.metrics['blockchain']['registrations'].append(5000.0)  # assumed, not measured
 
         print()
         print("✅ Test 2 Complete")
@@ -616,8 +619,10 @@ class IdentitySystemComparison:
 
         print()
 
-        # Cost comparison
-        print("💰 COST COMPARISON")
+        # Cost comparison — blockchain column is ASSUMED public-mainnet
+        # pricing, not a measurement. Measured per-operation gas lives in
+        # 4_comparison-framework/results/gas_benchmark.json.
+        print("💰 COST COMPARISON (blockchain column = assumptions, not measurements)")
         print("-" * 80)
         print(f"{'Operation':<20} {'Centralized':>15} {'Blockchain':>15} {'Winner':>15}")
         print("-" * 80)
@@ -690,6 +695,12 @@ class IdentitySystemComparison:
         report = {
             'timestamp': datetime.now().isoformat(),
             'systems_tested': ['centralized', 'blockchain'],
+            'data_provenance': {
+                'centralized': 'measured (in-memory Python registry, wall clock)',
+                'blockchain': 'ASSUMED public-mainnet estimates — NOT measured; '
+                              'see 4_comparison-framework/results/gas_benchmark.json '
+                              'for measured per-operation gas',
+            },
             'metrics': self.metrics,
             'averages': {
                 'centralized': {

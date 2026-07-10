@@ -149,17 +149,18 @@
 **Measured**: verify median 7.5 ms / p95 8.9 ms (offline) — first Thrust 3 data point  
 **Unblocked**: MOBI VID, all 10 use cases, V2V credential experiments
 
-### MOBI VID 🔄
+### MOBI VID ✅
 
 | File | Lines | Status | Description |
 |------|-------|--------|-------------|
-| `mobi-vid/birth_certificate.py` | 0 | ⏳ **NEEDS BUILD** | VID I issuance |
-| `mobi-vid/lifecycle_events.py` | 0 | ⏳ **NEEDS BUILD** | VID II events |
-| `mobi-vid/mobi_vid_registry.py` | 0 | ⏳ **NEEDS BUILD** | Registry interface |
-| `mobi-vid/README.md` | 200 | ✅ Complete | Comprehensive guide |
+| `mobi-vid/birth_certificate.py` | 341 | ✅ Complete | VID I as W3C VC + keccak256 content-hash anchoring |
+| `mobi-vid/lifecycle_events.py` | 407 | ✅ Complete | VID II: 11 event types, attestations, history aggregation |
+| `mobi-vid/mobi_vid_registry.py` | 387 | ✅ Complete | web3 v7 binding to MOBIVIDRegistryV2 |
+| `mobi-vid/tests/test_mobi_vid_layer.py` | 486 | ✅ Complete | 21 tests (on-chain, self-managed Hardhat node) |
+| `mobi-vid/README.md` | — | ✅ Rewritten | Honest implemented-status table (was: unsubstantiated 100% claims) |
 
-**Missing**: ~1,200 lines of implementation  
-**Priority**: 🔴 **CRITICAL** (core thesis component)
+**On-chain**: V1 birth-registration contract bugs fixed (overflow + owner ordering);
+V1 birth 283,895 gas, V2 recordLifecycleEvent ~292.5k gas (measured)
 
 ### Configuration
 
@@ -301,21 +302,22 @@
 
 ## 📈 Progress Tracking
 
-### Overall Completion: 40%
+### Overall Completion: ~65%
 
 ```
-█████████░░░░░░░░░░░░░░░ 40%
+████████████████░░░░░░░░ 65%
 ```
 
 | Phase | Completion | Status |
 |-------|------------|--------|
-| Smart Contracts | 100% | ✅ |
+| Smart Contracts | 100% (61 tests) | ✅ |
 | W3C DID Layer | 100% | ✅ |
-| W3C VC Layer | 0% | ⏳ |
-| MOBI VID | 10% | ⏳ |
-| CV2X Testbed | 0% | ⏳ |
-| Comparison Framework | 0% | ⏳ |
-| Documentation | 30% | 🔄 |
+| W3C VC Layer | 100% (28 tests) | ✅ |
+| MOBI VID | 90% (21 tests; VIN encryption is demo-grade) | ✅ |
+| CV2X Testbed | 60% (12/12 use cases + 3/3 V2V scenarios real-verified; SUMO in simulate mode) | 🔄 |
+| Comparison Framework | 50% (4/9 standards gas-benchmarked, LaTeX/CSV generation; 5 standards lack contracts) | 🔄 |
+| W3C Compliance | 93.2% measured (executable checker) | ✅ |
+| Documentation | 70% | 🔄 |
 | CI/CD | 100% | ✅ |
 
 ### Lines of Code Progress

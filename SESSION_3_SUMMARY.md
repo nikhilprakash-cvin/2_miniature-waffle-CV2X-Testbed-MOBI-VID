@@ -6,6 +6,32 @@
 
 ---
 
+> ## ⚠️ CORRECTION (Integration Audit, July 2026)
+>
+> A later integration audit found several claims in this document were not
+> accurate at the time it was written:
+>
+> - **"10/10 use cases complete, all tests pass"** — 3 of the 10 use cases
+>   (UC6 Cross-Border, UC8 Emissions, UC10 AV Data Sharing) crashed on
+>   execution (`AttributeError: GOVERNMENT_INSPECTION`, issuer-role
+>   `ValueError`); "all tests pass" below is qualified as "(syntax
+>   validated)" — the suite had not been executed end-to-end.
+> - **VC verification was mocked** in the original
+>   `w3c_verifiable_credentials.py` — forged credentials verified as True,
+>   so "✅ verified" outputs in this session's runs did not reflect real
+>   cryptographic checks.
+> - **No blockchain was involved** in the use-case runs (in-memory
+>   centralized registry), despite "blockchain anchor"/"immutable" prints.
+>
+> All of the above were fixed in the integration pass (July 2026): the VC
+> layer was replaced with a shim over the canonical, tested implementation
+> (real signature recovery), the 3 crashes were fixed, 2 missing thesis use
+> cases (dealership sale, decommission) were added, and the suite now
+> reports a computed 12/12 with honest labeling. This header is retained
+> for research-record integrity rather than rewriting the session log.
+
+---
+
 ## 📊 Overview
 
 This session completed **both Option A (SUMO Integration)** and **Option B (Complete Use Cases)** as requested by the user.
