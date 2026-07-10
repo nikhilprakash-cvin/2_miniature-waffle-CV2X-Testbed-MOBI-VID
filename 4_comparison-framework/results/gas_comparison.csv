@@ -1,0 +1,9 @@
+operation,ERC-1056 gasUsed,ERC-1056 rel. cost (x cheapest),ERC-721 gasUsed,ERC-721 rel. cost (x cheapest),ERC-725 gasUsed,ERC-725 rel. cost (x cheapest),MOBI-VID-V2 gasUsed,MOBI-VID-V2 rel. cost (x cheapest)
+Deploy registry,979720,1.00,2778046,2.84,—,—,3866570,3.95
+Create identity,52612,1.00,542429,10.31,528647,10.05,298923,5.68
+Update key/attribute,35512,1.00,119753,3.37,137107,3.86,306901,8.64
+Add delegate/claim,54853,1.56,48306,1.37,120007,3.40,35264,1.00
+Revoke,35065,1.27,27685,1.00,43410,1.57,74844,2.70
+Transfer ownership,51764,1.82,174707,6.15,28397,1.00,199996,7.04
+
+Conditions,"solc 0.8.24 (optimizer on, 200 runs, viaIR)",OpenZeppelin 5.0.2,network hardhat-local,measured 2026-07-10T00:34:52.331Z

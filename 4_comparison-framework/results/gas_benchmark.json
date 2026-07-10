@@ -1,0 +1,159 @@
+{
+  "ERC-1056": {
+    "deployRegistry": {
+      "gasUsed": 979720,
+      "txCount": 1,
+      "notes": "Single shared registry for all identities (deployed once per network)."
+    },
+    "createIdentity": {
+      "gasUsed": 52612,
+      "txCount": 1,
+      "notes": "Identity exists implicitly (every address is a DID, zero-cost). Measured: first setAttribute publishing a verification key."
+    },
+    "updateAttribute": {
+      "gasUsed": 35512,
+      "txCount": 1,
+      "notes": "setAttribute rotating the published key (event-only storage; DID document built off-chain from event history)."
+    },
+    "addDelegateOrClaim": {
+      "gasUsed": 54853,
+      "txCount": 1,
+      "notes": "addDelegate(veriKey) with 1-year validity. On-chain claims are not part of ERC-1056."
+    },
+    "revoke": {
+      "gasUsed": 35065,
+      "txCount": 1,
+      "notes": "revokeAttribute of the published key. revokeDelegate is also supported at similar cost."
+    },
+    "transferOwnership": {
+      "gasUsed": 51764,
+      "txCount": 1,
+      "notes": "changeOwner: rotates the controlling key of the DID (identifier itself is stable)."
+    }
+  },
+  "ERC-721": {
+    "deployRegistry": {
+      "gasUsed": 2778046,
+      "txCount": 1,
+      "notes": "Single shared NFT contract; deployer receives DEFAULT_ADMIN_ROLE and MANUFACTURER_ROLE in constructor."
+    },
+    "createIdentity": {
+      "gasUsed": 542429,
+      "txCount": 1,
+      "notes": "mintVehicle (manufacturer-only): mints NFT, stores VIN mapping + on-chain metadata struct + initial transfer record."
+    },
+    "updateAttribute": {
+      "gasUsed": 119753,
+      "txCount": 1,
+      "notes": "No key/attribute model in ERC-721. Measured closest analogue: addServiceRecord appending a metadata URI (role grant excluded as setup)."
+    },
+    "addDelegateOrClaim": {
+      "gasUsed": 48306,
+      "txCount": 1,
+      "notes": "approve(): delegates TRANSFER rights only - not a verification-key delegation or identity claim as in DID standards."
+    },
+    "transferOwnership": {
+      "gasUsed": 174707,
+      "txCount": 1,
+      "notes": "transferFrom: token transfer with on-chain transfer-history bookkeeping (contract overrides _update)."
+    },
+    "revoke": {
+      "gasUsed": 27685,
+      "txCount": 1,
+      "notes": "deactivateVehicle (admin-only): marks identity inactive; token itself is not burned."
+    }
+  },
+  "ERC-725": {
+    "deployRegistry": {
+      "gasUsed": null,
+      "txCount": 0,
+      "notes": "No shared registry in ERC-725: each identity is its own proxy-account contract. Deployment cost is counted under createIdentity."
+    },
+    "createIdentity": {
+      "gasUsed": 528647,
+      "txCount": 1,
+      "notes": "Per-vehicle identity contract deployment (proxy account); deployer becomes owner/management key. Paid once per identity."
+    },
+    "updateAttribute": {
+      "gasUsed": 137107,
+      "txCount": 1,
+      "notes": "addKey(purpose=1 MANAGEMENT, type=1 ECDSA): key rotation/addition stored in contract state."
+    },
+    "addDelegateOrClaim": {
+      "gasUsed": 120007,
+      "txCount": 1,
+      "notes": "addKey(purpose=3 CLAIM signer key). Full on-chain claims require the companion ERC-735 contract (not yet implemented)."
+    },
+    "revoke": {
+      "gasUsed": 43410,
+      "txCount": 1,
+      "notes": "removeKey: deletes key and compacts the key array (cost grows with number of stored keys)."
+    },
+    "transferOwnership": {
+      "gasUsed": 28397,
+      "txCount": 1,
+      "notes": "transferOwnership of the identity contract to the new vehicle owner."
+    }
+  },
+  "MOBI-VID-V2": {
+    "deployRegistry": {
+      "gasUsed": 3866570,
+      "txCount": 1,
+      "notes": "Single shared registry (V2 = ERC-1056 base + MOBI VID I birth certificates + VID II lifecycle events); deployer becomes registry authority + authorized manufacturer."
+    },
+    "createIdentity": {
+      "gasUsed": 298923,
+      "txCount": 1,
+      "notes": "registerVehicleBirth (MOBI VID I birth certificate): VIN hash + encrypted VIN + cert hash + first owner. birthAttributes left empty to avoid known V1 validity-overflow bug."
+    },
+    "updateAttribute": {
+      "gasUsed": 306901,
+      "txCount": 1,
+      "notes": "recordLifecycleEvent (MOBI VID II, MAINTENANCE): stores full event struct + VC hash + counters on-chain. Issuer authorization excluded as setup."
+    },
+    "addDelegateOrClaim": {
+      "gasUsed": 35264,
+      "txCount": 1,
+      "notes": "Inherited ERC-1056 addDelegate (sigAuth, 1 year). V2-native multi-party attestEvent (claim analogue, 65-byte signature stored) measured separately: 188446 gas."
+    },
+    "transferOwnership": {
+      "gasUsed": 199996,
+      "txCount": 1,
+      "notes": "transferVehicleOwnership: appends odometer-stamped ownership record + ERC-1056 changeOwner. Called by current owner."
+    },
+    "revoke": {
+      "gasUsed": 74844,
+      "txCount": 1,
+      "notes": "revokeIdentity (inherited ERC-1056 extension): permanently flags the vehicle DID as revoked (decommissioning)."
+    }
+  },
+  "metadata": {
+    "solcVersion": "0.8.24",
+    "solcSettings": {
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "viaIR": true
+    },
+    "ozVersion": "5.0.2",
+    "date": "2026-07-10T00:34:52.331Z",
+    "network": "hardhat-local",
+    "chainId": 31337,
+    "operations": [
+      "deployRegistry",
+      "createIdentity",
+      "updateAttribute",
+      "addDelegateOrClaim",
+      "revoke",
+      "transferOwnership"
+    ],
+    "contracts": {
+      "ERC-1056": "contracts/ERC1056/EthereumDIDRegistry.sol:EthereumDIDRegistry",
+      "ERC-721": "contracts/ERC721/CVINVehicleNFT.sol:CVINVehicleNFT",
+      "ERC-725": "contracts/ERC725/CVIN_DID_ERC725.sol:CVIN_SCBasedAccOrID_DID_ERC725Basic",
+      "MOBI-VID-V2": "contracts/MOBI/MOBIVIDRegistryV2.sol:MOBIVIDRegistryV2 (copied unmodified from cv2x-testbed)"
+    },
+    "notes": "gasUsed is the exact receipt.gasUsed of a single representative transaction per operation on a fresh Hardhat in-process network. null = operation not supported by the standard (see notes). Setup transactions (role grants, issuer authorization) are excluded from operation gas."
+  }
+}
