@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+cv2x-testbed/demo_output/
+cv2x-testbed/scripts/comparison_results.json
