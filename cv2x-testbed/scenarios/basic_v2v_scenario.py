@@ -4,6 +4,7 @@ Basic V2V Communication Scenario
 Tests basic vehicle-to-vehicle communication with BSM exchange.
 """
 
+import statistics
 import sys
 import time
 from datetime import datetime
@@ -180,7 +181,6 @@ def run_basic_v2v_scenario(use_identity: bool = True,
 
     # Latency metrics
     if all_metrics['latencies']:
-        import statistics
         print(f"\nLatency Statistics:")
         print(f"  Mean: {statistics.mean(all_metrics['latencies']):.2f} ms")
         print(f"  Median: {statistics.median(all_metrics['latencies']):.2f} ms")
@@ -198,8 +198,10 @@ def run_basic_v2v_scenario(use_identity: bool = True,
         print(f"\nIdentity Verification (PKI):")
         print(f"  Mean Time: {statistics.mean(all_metrics['verification_times']):.2f} ms")
         print(f"  Median Time: {statistics.median(all_metrics['verification_times']):.2f} ms")
-        print(f"  Overhead: {(statistics.mean(all_metrics['verification_times']) /
-                              statistics.mean(all_metrics['latencies']) * 100):.1f}% of total latency")
+        if all_metrics['latencies']:
+            overhead_pct = (statistics.mean(all_metrics['verification_times']) /
+                            statistics.mean(all_metrics['latencies']) * 100)
+            print(f"  Overhead: {overhead_pct:.1f}% of total latency")
 
     # Per-vehicle statistics
     print(f"\nPer-Vehicle Statistics:")

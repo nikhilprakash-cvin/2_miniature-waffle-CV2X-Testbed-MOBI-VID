@@ -30,6 +30,7 @@ from protocols.cv2x_stack import (
     CV2XStack,
     CommunicationMode,
     VehicleState,
+    Position,
     BSM,
     DENM
 )
@@ -124,11 +125,11 @@ def scenario_1_registration_and_v2x():
     print("Step 3: CA verifies MOBI VID credentials")
     print("-" * 40)
 
-    # In production, CA would verify the blockchain transaction
+    # Look up the birth certificate in the registry (centralized baseline)
     birth_verified = registry.get_birth_certificate(vehicle_id)
 
     if birth_verified:
-        print_success("Birth certificate verified on blockchain")
+        print_success("Birth certificate verified in registry (centralized baseline)")
         print_success(f"Manufacturer: {birth_verified.manufacturer}")
         print_success(f"Registration date: {birth_verified.registered_at}")
     else:
@@ -152,7 +153,7 @@ def scenario_1_registration_and_v2x():
         }
     )
 
-    print_success(f"Issued {v2x_ca.pseudonym_pool_size} pseudonym certificates")
+    print_success(f"Issued {v2x_credential.credential_data['pseudonym_count']} pseudonym certificates")
     print_success(f"Primary certificate: {v2x_credential.vehicle_id[:20]}...")
     print_success(f"Rotation interval: 5 minutes")
     print()
@@ -176,9 +177,11 @@ def scenario_1_registration_and_v2x():
     print("-" * 40)
 
     vehicle_state = VehicleState(
-        position={'lat': 37.7749, 'lon': -122.4194},
+        vehicle_id=cert.vin,
+        timestamp=datetime.utcnow().isoformat(),
+        position=Position(latitude=37.7749, longitude=-122.4194),
         speed=25.0,  # mph
-        heading=90,
+        heading=90.0,
         acceleration=0.5
     )
 
@@ -187,7 +190,10 @@ def scenario_1_registration_and_v2x():
         'type': 'BSM',
         'vehicle_id': cert.vin,
         'timestamp': int(time.time()),
-        'position': vehicle_state.position,
+        'position': {
+            'lat': vehicle_state.position.latitude,
+            'lon': vehicle_state.position.longitude
+        },
         'speed': vehicle_state.speed,
         'heading': vehicle_state.heading,
         'acceleration': vehicle_state.acceleration,
@@ -198,7 +204,7 @@ def scenario_1_registration_and_v2x():
     signed_bsm = v2x_ca.sign_message(cert.vin, bsm_data)
 
     print_success("BSM created and signed")
-    print_info(f"Position: ({vehicle_state.position['lat']:.4f}, {vehicle_state.position['lon']:.4f})")
+    print_info(f"Position: ({vehicle_state.position.latitude:.4f}, {vehicle_state.position.longitude:.4f})")
     print_info(f"Speed: {vehicle_state.speed} mph")
     print_info(f"Signature: {signed_bsm['signature'][:40]}...")
     print()
@@ -208,7 +214,7 @@ def scenario_1_registration_and_v2x():
     print("Key Points:")
     print("  ✅ MOBI VID provides verified vehicle identity")
     print("  ✅ Birth certificate enables V2X certificate issuance")
-    print("  ✅ Each BSM is linked to immutable birth certificate")
+    print("  ✅ Each BSM is linked to a registry-anchored birth certificate (centralized baseline)")
     print("  ✅ Trust chain: Manufacturer → MOBI VID → V2X CA → BSM")
     print()
 
@@ -293,7 +299,7 @@ def scenario_2_platoon_with_identity():
         print("  Lead truck verifies:")
         print(f"    - MOBI VID: {truck['mobi_vid']}")
 
-        # Check birth certificate on blockchain
+        # Check birth certificate in the registry (centralized baseline)
         vehicle_id = f"vehicle_{truck['mobi_vid'][:16]}"
         birth_cert = registry.get_birth_certificate(vehicle_id)
 
@@ -474,7 +480,7 @@ def scenario_3_emergency_brake_warning():
             birth_cert = registry.get_birth_certificate(vehicle_id)
 
             if birth_cert:
-                print("  ✅ MOBI VID verified on blockchain")
+                print("  ✅ MOBI VID verified in registry (centralized baseline)")
                 print(f"  ✅ Verified manufacturer: {birth_cert.manufacturer}")
 
                 # Take evasive action
@@ -517,36 +523,47 @@ def main():
     print("="*80)
 
     scenarios = [
-        scenario_1_registration_and_v2x,
-        scenario_2_platoon_with_identity,
-        scenario_3_emergency_brake_warning,
+        ("1", "Vehicle Registration + V2X Certificate Issuance", scenario_1_registration_and_v2x),
+        ("2", "Truck Platooning with Identity Verification", scenario_2_platoon_with_identity),
+        ("3", "Emergency Electronic Brake Light (EEBL)", scenario_3_emergency_brake_warning),
     ]
 
-    for scenario in scenarios:
+    results = []
+    for num, name, scenario in scenarios:
         try:
             scenario()
-            time.sleep(2)
+            results.append((num, name, True, None))
         except Exception as e:
-            print(f"\n❌ Scenario failed: {e}\n")
+            print(f"\n❌ Scenario {num} FAILED: {e}\n")
             import traceback
             traceback.print_exc()
+            results.append((num, name, False, f"{type(e).__name__}: {e}"))
+        time.sleep(0.2)
+
+    passed = [r for r in results if r[2]]
+    failed = [r for r in results if not r[2]]
 
     print("="*80)
-    print(" ALL SCENARIOS COMPLETE")
+    print(" SCENARIO RESULTS")
     print("="*80)
+    for num, name, ok, error in results:
+        print(f"  {num}. {name}: {'✅ PASS' if ok else '❌ FAIL'}")
+        if error:
+            print(f"     └─ {error}")
     print()
-    print("📊 Summary:")
-    print("  ✅ Vehicle registration integrated with V2X")
-    print("  ✅ Identity verification in safety-critical scenarios")
-    print("  ✅ Real-time message authentication (<10ms)")
-    print("  ✅ MOBI VID provides trust foundation for V2V")
+    print(f"{len(passed)}/{len(results)} scenarios passed")
+
+    if failed:
+        return 1
+
     print()
     print("🔗 Next Steps:")
     print("  - Deploy to test vehicles")
     print("  - Integrate with SUMO simulation")
     print("  - Test at scale (100+ vehicles)")
     print("  - Measure performance under congestion")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

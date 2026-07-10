@@ -2,7 +2,7 @@
 """
 MOBI VID Use Case Test Suite
 
-Automated implementation of all 10 real-world use cases:
+Automated implementation of 12 real-world use cases:
 1. Vehicle Manufacturing & Birth Registration
 2. Regular Maintenance Service
 3. Ownership Transfer (Used Car Sale)
@@ -13,9 +13,13 @@ Automated implementation of all 10 real-world use cases:
 8. Emissions Testing & Compliance
 9. Vehicle Theft & Recovery
 10. Autonomous Vehicle Data Sharing
+11. Dealership-Mediated Sale (Trade-In + Certified Resale)
+12. End-of-Life Decommission
 
 Each use case demonstrates the complete workflow with
-verifiable credentials and multi-party interactions.
+verifiable credentials and multi-party interactions against the
+centralized in-memory registry baseline. The suite tracks per-use-case
+pass/fail and exits nonzero if any use case fails.
 """
 
 import sys
@@ -74,7 +78,7 @@ def use_case_1_manufacturing():
     1. Tesla manufactures Model S
     2. Tesla registers birth certificate
     3. First owner receives credentials
-    4. Immutable origin proof established
+    4. Registry-anchored origin proof established (centralized baseline)
     """
     print_section("USE CASE 1: Vehicle Manufacturing & Birth Registration")
 
@@ -151,9 +155,9 @@ def use_case_1_manufacturing():
 
     print()
     print("🎯 USE CASE 1 COMPLETE")
-    print("   ✅ Vehicle has immutable origin proof")
+    print("   ✅ Vehicle origin proof registry-anchored (centralized baseline)")
     print("   ✅ Owner has verifiable birth certificate")
-    print("   ✅ Cannot be counterfeited (blockchain anchor)")
+    print("   ✅ Birth certificate VC is cryptographically signed and verifiable")
 
 
 # ============ USE CASE 2: MAINTENANCE SERVICE ============
@@ -167,7 +171,7 @@ def use_case_2_maintenance():
     1. Owner takes vehicle to service center
     2. Service performed
     3. Service center issues VC
-    4. Event recorded on blockchain
+    4. Event recorded in the registry (centralized baseline)
     """
     print_section("USE CASE 2: Regular Maintenance Service")
 
@@ -339,7 +343,7 @@ def use_case_3_used_car_sale():
         print_success("   - Maintenance records verified")
         print_success("   - No hidden damage")
     else:
-        print(f"❌ Verification failed: {result['errors']}")
+        raise RuntimeError(f"Presentation verification failed: {result.get('errors')}")
 
     print()
     print_step(4, "DMV facilitates ownership transfer")
@@ -360,8 +364,8 @@ def use_case_3_used_car_sale():
     print("🎯 USE CASE 3 COMPLETE")
     print("   ✅ Complete transparency for buyer")
     print("   ✅ No hidden damage or history")
-    print("   ✅ Instant verification")
-    print("   ✅ Trustless transaction")
+    print("   ✅ Instant cryptographic verification of presented credentials")
+    print("   ✅ Transfer recorded in registry (centralized baseline)")
 
 
 # ============ USE CASE 4: INSURANCE CLAIM ============
@@ -599,7 +603,7 @@ def use_case_6_cross_border():
     # Setup authorities
     registry.authorize_issuer("honda_ca", "Honda Canada", IssuerRole.MANUFACTURER, "MFG-CA-HONDA")
     registry.authorize_issuer("customs_001", "US Customs", IssuerRole.GOVERNMENT_DMV, "CBP-US-001")
-    registry.authorize_issuer("epa_001", "US EPA", IssuerRole.GOVERNMENT_INSPECTION, "EPA-US-001")
+    registry.authorize_issuer("epa_001", "US EPA", IssuerRole.INSPECTION_STATION, "EPA-US-001")
     registry.authorize_issuer("dmv_us", "Washington DMV", IssuerRole.GOVERNMENT_DMV, "DMV-WA-001")
 
     print_step(1, "Vehicle manufactured in Canada")
@@ -654,6 +658,9 @@ def use_case_6_cross_border():
 
     verifier = CredentialVerifier()
     is_valid, result = verifier.verify_presentation(vp, "customs_verification", "cbp.gov")
+
+    if not is_valid:
+        raise RuntimeError(f"Customs verification failed: {result.get('errors')}")
 
     if is_valid:
         print_success("✅ Birth certificate verified")
@@ -857,8 +864,8 @@ def use_case_8_emissions():
 
     # Setup
     registry.authorize_issuer("bmw_001", "BMW AG", IssuerRole.MANUFACTURER, "MFG-DE-BMW")
-    registry.authorize_issuer("emissions_001", "CA Smog Check Station", IssuerRole.GOVERNMENT_INSPECTION, "SMOG-CA-001")
-    registry.authorize_issuer("epa_001", "US EPA", IssuerRole.GOVERNMENT_INSPECTION, "EPA-US-001")
+    registry.authorize_issuer("emissions_001", "CA Smog Check Station", IssuerRole.INSPECTION_STATION, "SMOG-CA-001")
+    registry.authorize_issuer("epa_001", "US EPA", IssuerRole.INSPECTION_STATION, "EPA-US-001")
     registry.authorize_issuer("dmv_001", "CA DMV", IssuerRole.GOVERNMENT_DMV, "DMV-CA-001")
 
     print_step(1, "Vehicle registered in California")
@@ -965,7 +972,7 @@ def use_case_8_emissions():
     print("   ✅ Environmental compliance verified")
     print("   ✅ Automated registration renewal")
     print("   ✅ EPA oversight enabled")
-    print("   ✅ Tamper-proof test results")
+    print("   ✅ Test results registry-anchored (centralized baseline)")
 
 
 # ============ USE CASE 9: THEFT & RECOVERY ============
@@ -977,7 +984,7 @@ def use_case_9_theft_recovery():
     Parties: Owner, Police, Insurance, Recovery Service
     Flow:
     1. Vehicle reported stolen
-    2. Theft record on blockchain (public)
+    2. Theft record in shared registry (centralized baseline)
     3. Vehicle recovered
     4. Ownership verified via birth certificate
     """
@@ -1115,7 +1122,7 @@ def use_case_9_theft_recovery():
     print("   ✅ Multi-jurisdiction coordination")
     print("   ✅ Ownership proof via birth certificate")
     print("   ✅ Insurance fraud prevention")
-    print("   ✅ Public theft database")
+    print("   ✅ Shared theft database (centralized baseline)")
 
 
 # ============ USE CASE 10: AUTONOMOUS VEHICLE DATA ============
@@ -1139,6 +1146,10 @@ def use_case_10_autonomous_data():
     registry.authorize_issuer("waymo_001", "Waymo LLC", IssuerRole.MANUFACTURER, "MFG-US-WAYMO")
     registry.authorize_issuer("ai_company_001", "OpenAI Robotics", IssuerRole.SERVICE_CENTER, "AI-CA-001")
     registry.authorize_issuer("insurance_001", "Geico AV", IssuerRole.INSURANCE_COMPANY, "INS-GEICO-001")
+    # The fleet owner records data-collection / data-sharing events itself:
+    # the role matrix (mirroring the Solidity contract) only lets OWNER /
+    # SERVICE_CENTER issue MODIFICATION events, not MANUFACTURER.
+    registry.authorize_issuer("av_fleet_owner_001", "AV Fleet Owner LLC", IssuerRole.OWNER, "OWN-AV-001")
 
     print_step(1, "Register autonomous vehicle")
     print_info("Waymo One - Level 5 Autonomous")
@@ -1162,11 +1173,12 @@ def use_case_10_autonomous_data():
     print()
     print_step(2, "Vehicle collects driving data")
 
-    # Record various driving sessions
+    # Record various driving sessions (owner-recorded MODIFICATION event:
+    # the manufacturer role is not authorized for inspection/modification events)
     driving_data_event = registry.record_lifecycle_event(
         vehicle_id=vehicle_id,
-        event_type=EventType.INSPECTION,  # Using inspection type for data collection
-        issuer_id="waymo_001",
+        event_type=EventType.MODIFICATION,  # Owner-recorded data-collection configuration event
+        issuer_id="av_fleet_owner_001",
         odometer=10000,
         event_data={
             "event_subtype": "DATA_COLLECTION",
@@ -1241,10 +1253,12 @@ def use_case_10_autonomous_data():
     verifier = CredentialVerifier()
     is_valid, result = verifier.verify_presentation(vp, "ai_company_data_request", "openai.com")
 
-    if is_valid:
-        print_success("✅ AI company verified data authenticity")
-        print_success("💰 Payment: $5,000 for 400 TB training data")
-        print_success("📊 Data quality score: 98/100")
+    if not is_valid:
+        raise RuntimeError(f"AI company data verification failed: {result.get('errors')}")
+
+    print_success("✅ AI company verified data authenticity")
+    print_success("💰 Payment: $5,000 for 400 TB training data")
+    print_success("📊 Data quality score: 98/100")
 
     print()
     print_step(5, "Insurance company requests safety data")
@@ -1279,10 +1293,12 @@ def use_case_10_autonomous_data():
         "geico.com"
     )
 
-    if is_valid_ins:
-        print_success("✅ Insurance verified safety record")
-        print_success("💰 Premium discount: 40% (excellent safety)")
-        print_success("📉 Annual savings: $1,200")
+    if not is_valid_ins:
+        raise RuntimeError(f"Insurance safety verification failed: {result_ins.get('errors')}")
+
+    print_success("✅ Insurance verified safety record")
+    print_success("💰 Premium discount: 40% (excellent safety)")
+    print_success("📉 Annual savings: $1,200")
 
     print()
     print_step(6, "Record data sharing events")
@@ -1290,7 +1306,7 @@ def use_case_10_autonomous_data():
     data_share_event = registry.record_lifecycle_event(
         vehicle_id=vehicle_id,
         event_type=EventType.MODIFICATION,  # Using modification for configuration changes
-        issuer_id="waymo_001",
+        issuer_id="av_fleet_owner_001",  # Owner controls (and records) data-sharing consent
         odometer=10000,
         event_data={
             "event_subtype": "DATA_SHARING_CONSENT",
@@ -1312,18 +1328,268 @@ def use_case_10_autonomous_data():
     print("   ✅ Data monetization ($5,000)")
     print("   ✅ Insurance discounts (40%)")
     print("   ✅ Verifiable safety record")
-    print("   ✅ Tamper-proof audit trail")
+    print("   ✅ Audit trail registry-anchored (centralized baseline)")
+
+
+# ============ USE CASE 11: DEALERSHIP-MEDIATED SALE ============
+
+def use_case_11_dealership_sale():
+    """
+    Use Case 11: Dealership-Mediated Sale (Trade-In + Certified Resale)
+
+    Parties: Seller (John), Dealership, Buyer (Alice), DMV
+    Flow:
+    1. Owner trades vehicle in to dealership (first ownership transfer)
+    2. Dealership performs certified pre-owned reconditioning (dealer event)
+    3. Dealership sells vehicle to new owner (second ownership transfer)
+    4. Dealership issues a sale credential (VC) to the new owner
+    5. New owner presents the VC for title registration; verifier checks it
+    """
+    print_section("USE CASE 11: Dealership-Mediated Sale (Trade-In + Certified Resale)")
+
+    registry = CentralizedVehicleRegistry()
+
+    # Setup
+    registry.authorize_issuer("tesla_001", "Tesla Inc.", IssuerRole.MANUFACTURER, "MFG-TESLA")
+    registry.authorize_issuer("dealer_001", "Bay Area Auto Group", IssuerRole.DEALER, "DLR-CA-001")
+    registry.authorize_issuer("dmv_001", "CA DMV", IssuerRole.GOVERNMENT_DMV, "DMV-CA-001")
+
+    cert = registry.register_vehicle_birth(
+        vin="5YJ3E1EA0PF654321", manufacturer="Tesla Inc.", make="Tesla",
+        model="Model 3", year=2023, color="Pearl White",
+        first_owner="john_doe_001", manufacturer_id="tesla_001"
+    )
+    vehicle_id = f"vehicle_{cert.certificate_id}"
+
+    print_step(1, "Owner trades vehicle in to dealership")
+    print_info("Trade-in value: $28,000 at 30,000 miles")
+
+    trade_in = registry.transfer_ownership(
+        vehicle_id=vehicle_id,
+        new_owner="dealer_001",
+        odometer=30000,
+        sale_price=28000.00,
+        authority="CA DMV"
+    )
+    print_success(f"Trade-in recorded: {trade_in.transfer_id}")
+    print_success("Vehicle now held by: Bay Area Auto Group")
+
+    print()
+    print_step(2, "Dealership performs certified pre-owned reconditioning")
+
+    recon_event = registry.record_lifecycle_event(
+        vehicle_id=vehicle_id,
+        event_type=EventType.MAINTENANCE,
+        issuer_id="dealer_001",
+        odometer=30050,
+        event_data={
+            "services": [
+                "150-point certified pre-owned inspection",
+                "Brake pad replacement",
+                "Cabin filter replacement"
+            ],
+            "certified_pre_owned": True,
+            "cost": 850.00
+        },
+        jurisdiction="CA-USA"
+    )
+    print_success(f"Reconditioning recorded: {recon_event.event_id}")
+    print_success(f"Issued by verified dealer: {recon_event.verified}")
+
+    print()
+    print_step(3, "Dealership sells vehicle to new owner (Alice)")
+
+    sale = registry.transfer_ownership(
+        vehicle_id=vehicle_id,
+        new_owner="alice_brown_001",
+        odometer=30060,
+        sale_price=33500.00,
+        authority="CA DMV"
+    )
+    print_success(f"Sale recorded: {sale.transfer_id}")
+    print_success("New owner: alice_brown_001")
+    print_success("Sale price: $33,500")
+
+    print()
+    print_step(4, "Dealership issues sale credential (VC) to new owner")
+
+    dealer_issuer = CredentialIssuer(
+        issuer_did="did:ethr:0x1:0xDEALER001",
+        private_key="0x" + "9" * 64,
+        issuer_name="Bay Area Auto Group"
+    )
+
+    sale_vc = dealer_issuer.issue_credential(
+        credential_type="VehicleSaleCredential",
+        subject_did="did:ethr:0x1:0xALICE001",
+        claims={
+            "vin": "5YJ3E1EA0PF654321",
+            "transfer_id": sale.transfer_id,
+            "new_owner": "alice_brown_001",
+            "odometer": 30060,
+            "sale_price": 33500.00,
+            "certified_pre_owned": True,
+            "dealer_license": "DLR-CA-001"
+        },
+        validity_days=3650
+    )
+    print_success(f"Sale VC issued: {sale_vc.id}")
+
+    buyer_wallet = HolderWallet("did:ethr:0x1:0xALICE001", "0x" + "a" * 64)
+    buyer_wallet.store_credential(sale_vc)
+    print_success("Credential stored in new owner's wallet")
+
+    print()
+    print_step(5, "New owner presents VC for title registration")
+
+    vp = buyer_wallet.create_presentation(
+        credential_ids=[sale_vc.id],
+        challenge="dmv_title_challenge",
+        domain="dmv.ca.gov"
+    )
+
+    verifier = CredentialVerifier()
+    is_valid, result = verifier.verify_presentation(vp, "dmv_title_challenge", "dmv.ca.gov")
+    if not is_valid:
+        raise RuntimeError(f"Sale credential verification failed: {result.get('errors')}")
+    print_success("✅ Sale credential verified by DMV")
+
+    # Sanity checks against the registry
+    if registry.current_owners[vehicle_id] != "alice_brown_001":
+        raise RuntimeError("Registry does not reflect the new owner after dealership sale")
+    history = registry.get_vehicle_history(vehicle_id)
+    if history['transfer_count'] != 2:
+        raise RuntimeError(f"Expected 2 ownership transfers, found {history['transfer_count']}")
+
+    print()
+    print("🎯 USE CASE 11 COMPLETE")
+    print("   ✅ Dealer-mediated two-step transfer (trade-in + resale)")
+    print("   ✅ Certified pre-owned reconditioning by authorized dealer")
+    print("   ✅ Sale credential cryptographically verified")
+    print("   ✅ Transfers recorded in registry (centralized baseline)")
+
+
+# ============ USE CASE 12: END-OF-LIFE DECOMMISSION ============
+
+def use_case_12_end_of_life_decommission():
+    """
+    Use Case 12: End-of-Life Decommission
+
+    Parties: Owner, DMV, Recycling Facility
+    Flow:
+    1. Vehicle reaches end of life after long service history
+    2. DMV records DECOMMISSION event with final odometer reading
+    3. Vehicle marked decommissioned (title: SCRAPPED)
+    4. Post-decommission events checked (rejected if the registry
+       enforces it; otherwise the decommission is asserted in history)
+    """
+    print_section("USE CASE 12: End-of-Life Decommission")
+
+    registry = CentralizedVehicleRegistry()
+
+    # Setup
+    registry.authorize_issuer("gm_001", "General Motors", IssuerRole.MANUFACTURER, "MFG-US-GM")
+    registry.authorize_issuer("service_001", "AC Delco Service", IssuerRole.SERVICE_CENTER, "SC-MI-001")
+    registry.authorize_issuer("dmv_001", "MI DMV", IssuerRole.GOVERNMENT_DMV, "DMV-MI-001")
+
+    print_step(1, "Vehicle with long service history reaches end of life")
+
+    cert = registry.register_vehicle_birth(
+        vin="1G1ZD5ST8JF100001", manufacturer="General Motors", make="Chevrolet",
+        model="Malibu", year=2008, color="Gray",
+        first_owner="longtime_owner_001", manufacturer_id="gm_001"
+    )
+    vehicle_id = f"vehicle_{cert.certificate_id}"
+
+    registry.record_lifecycle_event(
+        vehicle_id=vehicle_id, event_type=EventType.MAINTENANCE,
+        issuer_id="service_001", odometer=120000,
+        event_data={"services": ["Transmission service"]}, jurisdiction="MI-USA"
+    )
+    print_success("Vehicle registered with 17 years of service history")
+    print_info("Final state: 185,000 miles, repair costs exceed value")
+
+    print()
+    print_step(2, "DMV records decommission event with final odometer")
+
+    decommission_event = registry.record_lifecycle_event(
+        vehicle_id=vehicle_id,
+        event_type=EventType.DECOMMISSION,
+        issuer_id="dmv_001",
+        odometer=185000,  # Final odometer reading
+        event_data={
+            "reason": "END_OF_LIFE",
+            "title_status": "SCRAPPED",
+            "final_odometer": 185000,
+            "disposal_method": "Certified recycling facility",
+            "recycling_facility": "Detroit Auto Recyclers LLC",
+            "parts_harvested": ["Catalytic converter", "Battery", "Alternator"]
+        },
+        jurisdiction="MI-USA"
+    )
+    print_success(f"Decommission recorded: {decommission_event.event_id}")
+    print_success("Final odometer: 185,000 miles")
+    print_success("Title status: SCRAPPED")
+
+    print()
+    print_step(3, "Verify decommission is anchored in vehicle history")
+
+    history = registry.get_vehicle_history(vehicle_id)
+    decommission_events = [
+        e for e in history['lifecycle_events']
+        if e['event_type'] == 'decommission'
+    ]
+    if len(decommission_events) != 1:
+        raise RuntimeError(
+            f"Expected exactly 1 decommission event in history, found {len(decommission_events)}"
+        )
+    if decommission_events[0]['odometer'] != 185000:
+        raise RuntimeError("Decommission event does not carry the final odometer reading")
+
+    print_success("Decommission event present in registry history")
+    print_success("Final odometer permanently recorded in event history")
+
+    print()
+    print_step(4, "Check registry behavior for post-decommission events")
+
+    post_event_rejected = False
+    try:
+        registry.record_lifecycle_event(
+            vehicle_id=vehicle_id,
+            event_type=EventType.MAINTENANCE,
+            issuer_id="service_001",
+            odometer=185100,
+            event_data={"services": ["Oil change (should not be possible)"]},
+            jurisdiction="MI-USA"
+        )
+    except ValueError:
+        post_event_rejected = True
+
+    if post_event_rejected:
+        print_success("Registry rejected event after decommission")
+    else:
+        print_info("Registry (centralized baseline) does NOT block post-decommission events;")
+        print_info("the decommission event itself remains the authoritative end-of-life record")
+
+    print()
+    print("🎯 USE CASE 12 COMPLETE")
+    print("   ✅ End-of-life decommission recorded by DMV")
+    print("   ✅ Final odometer captured in registry (centralized baseline)")
+    print("   ✅ Title status marked SCRAPPED")
+    print(f"   {'✅' if post_event_rejected else 'ℹ️ '} Post-decommission events "
+          f"{'rejected by registry' if post_event_rejected else 'not blocked (baseline limitation, noted honestly)'}")
 
 
 # ============ MAIN ============
 
 def main():
-    """Run all use cases"""
+    """Run all use cases, track pass/fail honestly, exit nonzero on failure"""
     print("="*80)
     print(" MOBI VID USE CASE TEST SUITE")
     print("="*80)
     print()
-    print("Automated implementation of 10 real-world scenarios")
+    print("Automated implementation of 12 real-world scenarios")
+    print("(against the centralized in-memory registry baseline)")
     print()
     print("="*80)
 
@@ -1338,48 +1604,44 @@ def main():
         ("8", "Emissions Testing & Compliance", use_case_8_emissions),
         ("9", "Vehicle Theft & Recovery", use_case_9_theft_recovery),
         ("10", "Autonomous Vehicle Data Sharing", use_case_10_autonomous_data),
+        ("11", "Dealership-Mediated Sale (Trade-In + Certified Resale)", use_case_11_dealership_sale),
+        ("12", "End-of-Life Decommission", use_case_12_end_of_life_decommission),
     ]
 
+    results = []  # (num, name, passed, error)
     for num, name, func in use_cases:
         try:
             func()
-            time.sleep(1)  # Pause between use cases
+            results.append((num, name, True, None))
         except Exception as e:
-            print(f"\n❌ Use Case {num} failed: {e}\n")
+            print(f"\n❌ Use Case {num} FAILED: {e}\n")
             import traceback
             traceback.print_exc()
+            results.append((num, name, False, f"{type(e).__name__}: {e}"))
+        time.sleep(0.1)  # Brief pause between use cases
 
-    print_section("ALL USE CASES COMPLETE")
-    print("✅ 10/10 use cases implemented and tested")
-    print()
-    print("📊 Use Cases Summary:")
-    print("   1. ✅ Vehicle Manufacturing & Birth Registration")
-    print("   2. ✅ Regular Maintenance Service")
-    print("   3. ✅ Ownership Transfer (Used Car Sale)")
-    print("   4. ✅ Insurance Claim (Accident)")
-    print("   5. ✅ Manufacturer Recall")
-    print("   6. ✅ Cross-Border Vehicle Import")
-    print("   7. ✅ Fleet Management")
-    print("   8. ✅ Emissions Testing & Compliance")
-    print("   9. ✅ Vehicle Theft & Recovery")
-    print("  10. ✅ Autonomous Vehicle Data Sharing")
-    print()
-    print("🎯 Each use case demonstrates:")
-    print("   - Multi-party interactions")
-    print("   - Verifiable Credentials (W3C compliant)")
-    print("   - Complete audit trail")
-    print("   - Real-world applicability")
-    print("   - Privacy preservation")
-    print("   - Selective disclosure")
-    print()
-    print("💡 Key Insights:")
-    print("   - Birth certificates provide immutable origin proof")
-    print("   - Lifecycle events create complete vehicle history")
-    print("   - VCs enable selective disclosure (privacy)")
-    print("   - Multi-jurisdiction coordination seamless")
-    print("   - Fraud prevention through transparency")
-    print("   - Data monetization with owner control")
+    passed = [r for r in results if r[2]]
+    failed = [r for r in results if not r[2]]
+
+    print_section("USE CASE RESULTS SUMMARY")
+    print(f"{'#':>3}  {'Use Case':<55} {'Result':<8}")
+    print("-" * 72)
+    for num, name, ok, error in results:
+        print(f"{num:>3}  {name:<55} {'✅ PASS' if ok else '❌ FAIL'}")
+        if error:
+            print(f"       └─ {error}")
+    print("-" * 72)
+    print(f"\n{len(passed)}/{len(results)} use cases passed")
+
+    if failed:
+        print(f"\n❌ {len(failed)} use case(s) FAILED:")
+        for num, name, _, error in failed:
+            print(f"   {num}. {name}: {error}")
+        return 1
+
+    print("\n✅ All use cases passed (result computed from actual runs)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
