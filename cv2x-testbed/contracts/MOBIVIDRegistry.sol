@@ -52,6 +52,18 @@ contract MOBIVIDRegistry is ERC1056Registry {
         string registrationAuthority; // Government authority that processed transfer
     }
 
+    // ============ CONSTANTS ============
+
+    /**
+     * @dev Validity period used for "permanent" birth attributes.
+     *
+     * ERC1056Registry.setAttribute computes `block.timestamp + validity`
+     * with Solidity 0.8 checked arithmetic, so passing type(uint256).max
+     * overflows and reverts with panic 0x11. A finite 100-year validity is
+     * effectively permanent for a vehicle lifecycle and never overflows.
+     */
+    uint256 public constant PERMANENT_ATTRIBUTE_VALIDITY = 100 * 365 days;
+
     // ============ STORAGE ============
 
     // Registry authority (can authorize manufacturers)
@@ -249,14 +261,30 @@ contract MOBIVIDRegistry is ERC1056Registry {
 
         // Store birth attributes as ERC-1056 attributes
         // This allows W3C DID document construction from events
+        //
+        // ORDERING / ACTOR CONSTRAINT: ERC1056Registry.setAttribute is
+        // guarded by onlyOwner(identity, actor). The line above has just set
+        // owners[vehicleIdentity] = firstOwner, so from this point on the
+        // ONLY actor that passes that check is firstOwner. Passing
+        // msg.sender (the manufacturer) as the actor — as this function
+        // originally did — reverts whenever manufacturer != firstOwner,
+        // which made every realistic birth registration fail.
+        //
+        // The manufacturer's authority to perform birth registration is
+        // already enforced by the onlyAuthorizedManufacturer modifier on
+        // this function; the ERC-1056 attribute is written with firstOwner
+        // as the actor (on behalf of the brand-new identity owner) as part
+        // of this single atomic registration transaction. This preserves the
+        // ERC-1056 invariant that only the current identity owner writes
+        // attributes, without weakening the registry's access control.
         if (birthAttributes.length > 0) {
             bytes32 attrName = keccak256("mobi/vid/birth/attributes");
             setAttribute(
                 vehicleIdentity,
-                msg.sender,
+                firstOwner,
                 attrName,
                 birthAttributes,
-                type(uint256).max  // Permanent attribute
+                PERMANENT_ATTRIBUTE_VALIDITY  // finite ~100y; avoids overflow panic
             );
         }
 
