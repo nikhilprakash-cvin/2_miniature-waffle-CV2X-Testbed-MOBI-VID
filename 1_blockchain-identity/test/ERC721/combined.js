@@ -1,19 +1,16 @@
 const { expect } = require("chai");
+const { ethers } = require("hardhat");
 
 describe("ERC721 Combined Test Suite", function () {
-    let CVIN_NFT_DID_ERC721, CVIN_NFT_DID_ERC721_Monolithic, cvin_nft_did_erc721, cvin_nft_did_erc721_monolithic;
+    let CVIN_NFT_DID_ERC721, cvin_nft_did_erc721;
     let owner, addr1, addr2;
 
     beforeEach(async function () {
-        [owner, addr1, addr2, _] = await ethers.getSigners();
+        [owner, addr1, addr2] = await ethers.getSigners();
 
         CVIN_NFT_DID_ERC721 = await ethers.getContractFactory("CVIN_NFT_DID_ERC721");
         cvin_nft_did_erc721 = await CVIN_NFT_DID_ERC721.deploy("CVIN", "CVN", owner.address, 500);
-        await cvin_nft_did_erc721.deployed();
-
-        CVIN_NFT_DID_ERC721_Monolithic = await ethers.getContractFactory("CVIN_NFT_DID_ERC721_Monolithic");
-        cvin_nft_did_erc721_monolithic = await CVIN_NFT_DID_ERC721_Monolithic.deploy("CVIN", "CVN", owner.address, 500);
-        await cvin_nft_did_erc721_monolithic.deployed();
+        await cvin_nft_did_erc721.waitForDeployment();
     });
 
     describe("Regular ERC721", function () {
@@ -28,15 +25,19 @@ describe("ERC721 Combined Test Suite", function () {
         });
     });
 
-    describe("Monolithic ERC721", function () {
-        it("Should return the correct name and symbol", async function () {
-            expect(await cvin_nft_did_erc721_monolithic.name()).to.equal("CVIN");
-            expect(await cvin_nft_did_erc721_monolithic.symbol()).to.equal("CVN");
-        });
+    // Note: the previous "Monolithic ERC721" tests were removed because the
+    // CVIN_NFT_DID_ERC721_Monolithic contract only exists as a .sol.bak file
+    // and is not part of the compiled contract set.
+    describe("Royalty (ERC2981)", function () {
+        it("Should report the default royalty configured at deployment", async function () {
+            await cvin_nft_did_erc721.mint(addr1.address, 1, "tokenURI");
 
-        it("Should mint a token", async function () {
-            await cvin_nft_did_erc721_monolithic.mint(addr1.address, 1, "tokenURI");
-            expect(await cvin_nft_did_erc721_monolithic.ownerOf(1)).to.equal(addr1.address);
+            const salePrice = ethers.parseEther("1");
+            const [receiver, royaltyAmount] = await cvin_nft_did_erc721.royaltyInfo(1, salePrice);
+
+            expect(receiver).to.equal(owner.address);
+            // 500 basis points = 5%
+            expect(royaltyAmount).to.equal((salePrice * 500n) / 10000n);
         });
     });
 });

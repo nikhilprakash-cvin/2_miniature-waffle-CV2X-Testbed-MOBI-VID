@@ -214,9 +214,16 @@ describe("CVINVehicleDIDRegistry", function () {
         });
 
         it("should transfer ownership", async function () {
-            const tx = await vehicleRegistry
+            // ERC-1056: the current owner transfers ownership directly on the
+            // DID registry, then the VIN mapping is synchronized via
+            // updateOwnershipMapping on the vehicle registry.
+            await didRegistry
                 .connect(vehicleOwner)
-                .transferVehicleOwnership(vehicleDID, newOwner.address);
+                .changeOwner(vehicleDID, newOwner.address);
+
+            const tx = await vehicleRegistry
+                .connect(newOwner)
+                .updateOwnershipMapping(vehicleDID, newOwner.address);
 
             await expect(tx)
                 .to.emit(vehicleRegistry, "VehicleOwnershipTransferred")
@@ -224,27 +231,41 @@ describe("CVINVehicleDIDRegistry", function () {
 
             const owner = await vehicleRegistry.getVehicleOwner(vehicleDID);
             expect(owner).to.equal(newOwner.address);
+
+            // VIN now resolves to the new owner's DID
+            expect(await vehicleRegistry.getDIDFromVIN(TEST_VIN)).to.equal(newOwner.address);
         });
 
         it("should not allow unauthorized transfer", async function () {
+            // Attacker cannot change the DID owner in the DID registry
+            await expect(
+                didRegistry.connect(attacker).changeOwner(vehicleDID, attacker.address)
+            ).to.be.revertedWith("DIDRegistry: unauthorized");
+
+            // Nor update the VIN mapping without a completed DID ownership transfer
             await expect(
                 vehicleRegistry
                     .connect(attacker)
-                    .transferVehicleOwnership(vehicleDID, attacker.address)
-            ).to.be.revertedWith("CVINRegistry: not vehicle owner");
+                    .updateOwnershipMapping(vehicleDID, attacker.address)
+            ).to.be.revertedWith("CVINRegistry: ownership not transferred in DID registry");
         });
 
         it("should allow new owner to make changes", async function () {
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .transferVehicleOwnership(vehicleDID, newOwner.address);
+                .changeOwner(vehicleDID, newOwner.address);
+
+            await vehicleRegistry
+                .connect(newOwner)
+                .updateOwnershipMapping(vehicleDID, newOwner.address);
 
             const DELEGATE_VERIKEY = await vehicleRegistry.DELEGATE_VERIKEY();
 
+            // ERC-1056: the DID owner manages delegates directly on the DID registry
             await expect(
-                vehicleRegistry
+                didRegistry
                     .connect(newOwner)
-                    .addVerificationDelegate(vehicleDID, attacker.address, DELEGATE_VERIKEY, 86400)
+                    .addDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address, 86400)
             ).to.not.be.reverted;
         });
     });
@@ -274,11 +295,13 @@ describe("CVINVehicleDIDRegistry", function () {
             const SVC_CREDENTIAL = await vehicleRegistry.SVC_CREDENTIAL_SERVICE();
             const endpoint = "https://credentials.cvin.network";
 
+            // ERC-1056: attributes must be set by the DID owner directly on the
+            // DID registry (the vehicle registry contract is not the DID owner).
             await expect(
-                vehicleRegistry
+                didRegistry
                     .connect(vehicleOwner)
-                    .setServiceEndpoint(vehicleDID, SVC_CREDENTIAL, endpoint, 86400)
-            ).to.not.be.reverted;
+                    .setAttribute(vehicleDID, SVC_CREDENTIAL, ethers.toUtf8Bytes(endpoint), 86400)
+            ).to.emit(didRegistry, "DIDAttributeChanged");
         });
 
         it("should not allow unauthorized endpoint setting", async function () {
@@ -313,12 +336,15 @@ describe("CVINVehicleDIDRegistry", function () {
             vehicleDID = await vehicleRegistry.getDIDFromVIN(TEST_VIN);
         });
 
+        // ERC-1056: delegates are managed by the DID owner directly on the DID
+        // registry (the vehicle registry contract is not the DID owner); the
+        // vehicle registry is used as the query layer via isValidDelegate.
         it("should add verification delegate", async function () {
             const DELEGATE_VERIKEY = await vehicleRegistry.DELEGATE_VERIKEY();
 
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .addVerificationDelegate(vehicleDID, attacker.address, DELEGATE_VERIKEY, 86400);
+                .addDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address, 86400);
 
             const isValid = await vehicleRegistry.isValidDelegate(
                 vehicleDID,
@@ -332,13 +358,13 @@ describe("CVINVehicleDIDRegistry", function () {
         it("should revoke verification delegate", async function () {
             const DELEGATE_VERIKEY = await vehicleRegistry.DELEGATE_VERIKEY();
 
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .addVerificationDelegate(vehicleDID, attacker.address, DELEGATE_VERIKEY, 86400);
+                .addDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address, 86400);
 
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .revokeVerificationDelegate(vehicleDID, attacker.address, DELEGATE_VERIKEY);
+                .revokeDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address);
 
             const isValid = await vehicleRegistry.isValidDelegate(
                 vehicleDID,
@@ -353,13 +379,13 @@ describe("CVINVehicleDIDRegistry", function () {
             const DELEGATE_VERIKEY = await vehicleRegistry.DELEGATE_VERIKEY();
             const DELEGATE_SIGAUTH = await vehicleRegistry.DELEGATE_SIGAUTH();
 
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .addVerificationDelegate(vehicleDID, attacker.address, DELEGATE_VERIKEY, 86400);
+                .addDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address, 86400);
 
-            await vehicleRegistry
+            await didRegistry
                 .connect(vehicleOwner)
-                .addVerificationDelegate(vehicleDID, newOwner.address, DELEGATE_SIGAUTH, 86400);
+                .addDelegate(vehicleDID, DELEGATE_SIGAUTH, newOwner.address, 86400);
 
             expect(
                 await vehicleRegistry.isValidDelegate(vehicleDID, DELEGATE_VERIKEY, attacker.address)

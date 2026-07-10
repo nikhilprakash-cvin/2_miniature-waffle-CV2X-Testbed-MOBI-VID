@@ -115,9 +115,14 @@ class CredentialVerifier:
 
     def __init__(self,
                  revocation_registry: Optional[RevocationRegistry] = None,
-                 trusted_issuers: Optional[TrustedIssuerRegistry] = None):
+                 trusted_issuers: Optional[TrustedIssuerRegistry] = None,
+                 strict_schema: bool = True):
         self.revocation_registry = revocation_registry
         self.trusted_issuers = trusted_issuers or TrustedIssuerRegistry()
+        # strict_schema=False downgrades schema violations to warnings —
+        # used by legacy demo callers whose claims predate the registered
+        # schemas. Signature/temporal/revocation checks are never relaxed.
+        self.strict_schema = strict_schema
 
     # ------------------------------------------------------------------
     # Credential verification
@@ -190,8 +195,12 @@ class CredentialVerifier:
 
         ok, errors = validate_claims(cred_type, subject)
         if not ok:
-            for e in errors:
-                result.fail("schema", e)
+            if self.strict_schema:
+                for e in errors:
+                    result.fail("schema", e)
+            else:
+                for e in errors:
+                    result.warnings.append(f"[schema] {e}")
         result.ok("schema")
 
     def _check_temporal(self, vc: Dict[str, Any],

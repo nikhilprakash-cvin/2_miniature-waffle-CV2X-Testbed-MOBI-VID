@@ -1,699 +1,237 @@
+#!/usr/bin/env python3
 """
-W3C Verifiable Credentials Implementation
+W3C Verifiable Credentials — Compatibility Shim over the Canonical Layer
+=========================================================================
 
-Full implementation of W3C Verifiable Credentials Data Model v1.1 and
-Verifiable Presentations specification.
+HISTORY / WHY THIS FILE WAS REPLACED
+------------------------------------
+The original 699-line implementation in this file performed REAL signing but
+MOCKED verification: `_verify_signature` only checked that a `jws` key was
+present, and presentation verification was a challenge string comparison.
+A fully forged credential (fake issuer, garbage signature, tampered VIN)
+verified as True. Any benchmark or use-case result produced through it was
+cryptographically meaningless.
 
-Standards:
-- W3C Verifiable Credentials Data Model v1.1
-- W3C DID Core v1.0
-- JSON-LD
-- Linked Data Proofs
+This shim preserves the original module's public API (`CredentialIssuer`,
+`HolderWallet`, `CredentialVerifier` and their call/return shapes) but
+delegates all cryptography to the canonical, tested implementation in
+`2_w3c-ssi-layer/verifiable-credentials/` (28 passing tests, real secp256k1
+signature recovery, VC Data Model v2.0).
 
-Components:
-- Credential Issuer
-- Holder Wallet
-- Credential Verifier
-- Presentation creation/verification
+Consumers (`scripts/test_use_cases.py`, `scenarios/cv2x_identity_integration.py`)
+keep working unchanged — but verification is now real: tampered or forged
+credentials FAIL.
+
+Legacy-API notes handled here:
+- Demo DIDs like `did:ethr:0x1:0xTESLA123` are not valid Ethereum addresses,
+  so every issuer/holder auto-registers its (DID -> signing address) mapping
+  in a shared TrustedIssuerRegistry that the verifier consults.
+- Legacy credential types (e.g. "VehicleMaintenanceCredential") are not in
+  the canonical schema registry, so issuance runs with enforce_schema=False:
+  claims are not schema-checked, but signatures are real and verified.
+- Issued credentials/presentations are returned as attribute-accessible
+  handles (`.id`, `.expirationDate`, `.verifiableCredential`) to match the
+  original dataclass API.
+
+Author: Nikhil Prakash (MASc, UBC ECE)
 """
 
-import json
-import time
-import hashlib
-import uuid
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict, field
+import os
+import sys
+from typing import Any, Dict, List, Optional, Tuple
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.backends import default_backend
-from eth_account import Account
-from eth_account.messages import encode_defunct
+_CANONICAL_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..",
+    "2_w3c-ssi-layer", "verifiable-credentials",
+))
+if _CANONICAL_DIR not in sys.path:
+    sys.path.insert(0, _CANONICAL_DIR)
 
+from vc_issuer import (                                     # noqa: E402
+    CredentialIssuer as _CanonicalIssuer,
+    RevocationRegistry,
+)
+from vc_holder import HolderWallet as _CanonicalWallet      # noqa: E402
+from vc_verifier import (                                   # noqa: E402
+    CredentialVerifier as _CanonicalVerifier,
+    TrustedIssuerRegistry,
+    VerificationResult,
+)
 
-# ============ DATA MODELS ============
+# MOBI vocabulary context carried over from the original implementation
+MOBI_CONTEXT = "https://w3id.org/mobi/v1"
 
-@dataclass
-class VerifiableCredential:
-    """
-    W3C Verifiable Credential Data Model v1.1
-    https://www.w3.org/TR/vc-data-model/
-    """
-    # Required fields
-    context: List[str] = field(default_factory=lambda: [
-        "https://www.w3.org/2018/credentials/v1"
-    ])
-    id: str = ""
-    type: List[str] = field(default_factory=lambda: ["VerifiableCredential"])
-    issuer: Dict[str, Any] = field(default_factory=dict)
-    issuanceDate: str = ""
-    credentialSubject: Dict[str, Any] = field(default_factory=dict)
-
-    # Optional fields
-    expirationDate: Optional[str] = None
-    credentialStatus: Optional[Dict[str, Any]] = None
-    proof: Optional[Dict[str, Any]] = None
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary, excluding None values"""
-        data = asdict(self)
-        return {k: v for k, v in data.items() if v is not None}
-
-    def to_json(self) -> str:
-        """Convert to JSON string"""
-        return json.dumps(self.to_dict(), indent=2, sort_keys=True)
+# Shared state so independently-constructed issuers/wallets/verifiers in the
+# demo scripts see each other (the legacy API constructs CredentialVerifier()
+# with no arguments).
+SHARED_REVOCATION_REGISTRY = RevocationRegistry()
+SHARED_TRUSTED_ISSUERS = TrustedIssuerRegistry()
 
 
-@dataclass
-class VerifiablePresentation:
-    """
-    W3C Verifiable Presentation
-    """
-    # Required fields
-    context: List[str] = field(default_factory=lambda: [
-        "https://www.w3.org/2018/credentials/v1"
-    ])
-    type: List[str] = field(default_factory=lambda: ["VerifiablePresentation"])
-    verifiableCredential: List[VerifiableCredential] = field(default_factory=list)
+class _Handle:
+    """Attribute-accessible wrapper around a credential/presentation dict."""
 
-    # Optional fields
-    id: Optional[str] = None
-    holder: Optional[str] = None
-    proof: Optional[Dict[str, Any]] = None
+    def __init__(self, document: Dict[str, Any]):
+        self._document = document
 
-    def to_dict(self) -> Dict:
-        """Convert to dictionary"""
-        data = {
-            "@context": self.context,
-            "type": self.type,
-            "verifiableCredential": [vc.to_dict() for vc in self.verifiableCredential]
-        }
-        if self.id:
-            data["id"] = self.id
-        if self.holder:
-            data["holder"] = self.holder
-        if self.proof:
-            data["proof"] = self.proof
-        return data
+    def to_dict(self) -> Dict[str, Any]:
+        return self._document
 
-    def to_json(self) -> str:
-        """Convert to JSON string"""
-        return json.dumps(self.to_dict(), indent=2)
+    def __getattr__(self, name: str) -> Any:
+        doc = object.__getattribute__(self, "_document")
+        if name in doc:
+            return doc[name]
+        raise AttributeError(name)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._document[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._document.get(key, default)
 
 
-@dataclass
-class CredentialStatus:
-    """
-    Credential Status for revocation checking
-    """
-    id: str
-    type: str  # e.g., "RevocationList2020Status"
+class VCHandle(_Handle):
+    """Issued-credential handle exposing the legacy dataclass attributes."""
 
-    def to_dict(self) -> Dict:
-        return asdict(self)
+    def __init__(self, envelope: Dict[str, Any]):
+        super().__init__(envelope["verifiableCredential"])
+        self.envelope = envelope  # full envelope incl. disclosure map
 
+    @property
+    def issuanceDate(self) -> Optional[str]:  # legacy v1.1 name
+        return self._document.get("validFrom")
 
-@dataclass
-class LinkedDataProof:
-    """
-    Linked Data Proof (JSON-LD signature)
-    """
-    type: str  # e.g., "EcdsaSecp256k1Signature2019"
-    created: str
-    proofPurpose: str  # e.g., "assertionMethod"
-    verificationMethod: str  # DID URL to public key
-    jws: str  # JSON Web Signature
-
-    def to_dict(self) -> Dict:
-        return asdict(self)
+    @property
+    def expirationDate(self) -> Optional[str]:  # legacy v1.1 name
+        return self._document.get("validUntil")
 
 
-# ============ CREDENTIAL ISSUER ============
+class VPHandle(_Handle):
+    """Presentation handle (`.verifiableCredential`, `.holder`, `.proof`)."""
 
-class CredentialIssuer:
-    """
-    W3C Verifiable Credential Issuer Service
 
-    Capabilities:
-    - Issue verifiable credentials
-    - Sign credentials with DID
-    - Set expiration dates
-    - Revoke credentials
-    - Track issued credentials
-    """
+def _unwrap(document: Any) -> Any:
+    if isinstance(document, VCHandle):
+        return document.envelope
+    if isinstance(document, _Handle):
+        return document.to_dict()
+    return document
 
-    def __init__(
-        self,
-        issuer_did: str,
-        private_key: str,
-        issuer_name: str = "",
-        revocation_list_url: str = ""
-    ):
-        """
-        Initialize credential issuer
 
-        Args:
-            issuer_did: DID of issuer (e.g., "did:ethr:0x1:0x123...")
-            private_key: Private key for signing (hex string or Account)
-            issuer_name: Human-readable issuer name
-            revocation_list_url: URL to revocation list
-        """
-        self.issuer_did = issuer_did
+class CredentialIssuer(_CanonicalIssuer):
+    """Legacy-API issuer: (issuer_did, private_key, issuer_name)."""
+
+    def __init__(self, issuer_did: str,
+                 private_key: Optional[str] = None,
+                 issuer_name: Optional[str] = None):
+        super().__init__(issuer_did, private_key,
+                         revocation_registry=SHARED_REVOCATION_REGISTRY)
         self.issuer_name = issuer_name
-        self.revocation_list_url = revocation_list_url
+        # Demo DIDs don't embed real addresses — register the mapping so
+        # the verifier can check recovered signers for real.
+        SHARED_TRUSTED_ISSUERS.register(issuer_did, self.address)
 
-        # Handle private key
-        if isinstance(private_key, str):
-            self.account = Account.from_key(private_key)
-        else:
-            self.account = private_key
-
-        # Storage
-        self.issued_credentials = {}  # credential_id -> VC
-        self.revoked_credentials = set()  # Set of revoked credential IDs
-
-    def issue_credential(
-        self,
-        credential_type: str,
-        subject_did: str,
-        claims: Dict[str, Any],
-        validity_days: int = 365,
-        credential_id: Optional[str] = None
-    ) -> VerifiableCredential:
-        """
-        Issue a W3C Verifiable Credential
-
-        Args:
-            credential_type: Type of credential (e.g., "VehicleMaintenanceCredential")
-            subject_did: DID of credential subject (vehicle)
-            claims: Claims about the subject
-            validity_days: Days until expiration
-            credential_id: Optional credential ID (generated if not provided)
-
-        Returns:
-            Signed Verifiable Credential
-        """
-        # Generate credential ID
-        if not credential_id:
-            credential_id = f"urn:uuid:{uuid.uuid4()}"
-
-        # Create issuance and expiration dates
-        issuance_date = datetime.utcnow()
-        expiration_date = issuance_date + timedelta(days=validity_days)
-
-        # Build credential subject
-        credential_subject = {
-            "id": subject_did,
-            **claims
-        }
-
-        # Build issuer object
-        issuer_obj = {
-            "id": self.issuer_did
-        }
-        if self.issuer_name:
-            issuer_obj["name"] = self.issuer_name
-
-        # Create credential
-        vc = VerifiableCredential(
-            context=[
-                "https://www.w3.org/2018/credentials/v1",
-                "https://w3id.org/mobi/v1"  # MOBI context
-            ],
-            id=credential_id,
-            type=["VerifiableCredential", credential_type],
-            issuer=issuer_obj,
-            issuanceDate=issuance_date.isoformat() + "Z",
-            expirationDate=expiration_date.isoformat() + "Z",
-            credentialSubject=credential_subject
+    def issue_credential(self, credential_type: str, subject_did: str,
+                         claims: Dict[str, Any],
+                         validity_days: Optional[int] = 365,
+                         **kwargs: Any) -> VCHandle:
+        kwargs.setdefault("enforce_schema", False)
+        kwargs.setdefault("extra_contexts", [MOBI_CONTEXT])
+        envelope = super().issue_credential(
+            credential_type=credential_type,
+            subject_did=subject_did,
+            claims=claims,
+            validity_days=validity_days,
+            **kwargs,
         )
+        return VCHandle(envelope)
 
-        # Add credential status for revocation
-        if self.revocation_list_url:
-            vc.credentialStatus = {
-                "id": f"{self.revocation_list_url}#{credential_id}",
-                "type": "RevocationList2020Status"
-            }
 
-        # Sign the credential
-        vc = self._sign_credential(vc)
+class HolderWallet(_CanonicalWallet):
+    """Legacy-API wallet: (holder_did, private_key)."""
 
-        # Store issued credential
-        self.issued_credentials[credential_id] = vc
+    def __init__(self, holder_did: str, private_key: Optional[str] = None):
+        super().__init__(holder_did, private_key)
+        SHARED_TRUSTED_ISSUERS.register(holder_did, self.address)
 
-        return vc
+    def store_credential(self, credential: Any) -> str:
+        return super().store_credential(_unwrap(credential))
 
-    def _sign_credential(self, vc: VerifiableCredential) -> VerifiableCredential:
-        """
-        Sign credential with Linked Data Proof
-
-        Args:
-            vc: Unsigned credential
-
-        Returns:
-            Signed credential
-        """
-        # Create canonical representation
-        credential_dict = vc.to_dict()
-        credential_json = json.dumps(credential_dict, sort_keys=True)
-
-        # Hash the credential
-        credential_hash = hashlib.sha256(credential_json.encode()).digest()
-
-        # Sign with Ethereum account
-        message = encode_defunct(credential_hash)
-        signed_message = self.account.sign_message(message)
-
-        # Create JWS (simplified - in production use proper JWS format)
-        jws = signed_message.signature.hex()
-
-        # Create proof
-        proof = LinkedDataProof(
-            type="EcdsaSecp256k1Signature2019",
-            created=datetime.utcnow().isoformat() + "Z",
-            proofPurpose="assertionMethod",
-            verificationMethod=f"{self.issuer_did}#keys-1",
-            jws=jws
+    def create_presentation(self, credential_ids: List[str],
+                            challenge: str, domain: str,
+                            **kwargs: Any) -> VPHandle:
+        vp = super().create_presentation(
+            credential_ids=credential_ids,
+            challenge=challenge, domain=domain, **kwargs,
         )
+        return VPHandle(vp)
 
-        vc.proof = proof.to_dict()
-
-        return vc
-
-    def revoke_credential(self, credential_id: str, reason: str = "") -> bool:
-        """
-        Revoke a previously issued credential
-
-        Args:
-            credential_id: ID of credential to revoke
-            reason: Reason for revocation
-
-        Returns:
-            Success status
-        """
-        if credential_id not in self.issued_credentials:
-            return False
-
-        self.revoked_credentials.add(credential_id)
-        return True
-
-    def is_revoked(self, credential_id: str) -> bool:
-        """
-        Check if credential is revoked
-
-        Args:
-            credential_id: Credential ID to check
-
-        Returns:
-            True if revoked
-        """
-        return credential_id in self.revoked_credentials
-
-
-# ============ HOLDER WALLET ============
-
-class HolderWallet:
-    """
-    Holder Wallet for storing and presenting credentials
-
-    Capabilities:
-    - Store verifiable credentials
-    - Create verifiable presentations
-    - Selective disclosure
-    - Credential management
-    """
-
-    def __init__(
-        self,
-        holder_did: str,
-        private_key: str
-    ):
-        """
-        Initialize holder wallet
-
-        Args:
-            holder_did: DID of holder (vehicle owner)
-            private_key: Private key for signing presentations
-        """
-        self.holder_did = holder_did
-
-        # Handle private key
-        if isinstance(private_key, str):
-            self.account = Account.from_key(private_key)
-        else:
-            self.account = private_key
-
-        # Storage
-        self.credentials = {}  # credential_id -> VC
-
-    def store_credential(self, vc: VerifiableCredential) -> bool:
-        """
-        Store a credential in wallet
-
-        Args:
-            vc: Verifiable credential to store
-
-        Returns:
-            Success status
-        """
-        self.credentials[vc.id] = vc
-        return True
-
-    def get_credential(self, credential_id: str) -> Optional[VerifiableCredential]:
-        """
-        Retrieve credential from wallet
-
-        Args:
-            credential_id: ID of credential
-
-        Returns:
-            Credential or None
-        """
-        return self.credentials.get(credential_id)
-
-    def list_credentials(
-        self,
-        credential_type: Optional[str] = None
-    ) -> List[VerifiableCredential]:
-        """
-        List credentials in wallet
-
-        Args:
-            credential_type: Optional filter by type
-
-        Returns:
-            List of credentials
-        """
-        credentials = list(self.credentials.values())
-
-        if credential_type:
-            credentials = [
-                vc for vc in credentials
-                if credential_type in vc.type
-            ]
-
-        return credentials
-
-    def create_presentation(
-        self,
-        credential_ids: List[str],
-        challenge: str,
-        domain: str
-    ) -> VerifiablePresentation:
-        """
-        Create a Verifiable Presentation
-
-        Args:
-            credential_ids: List of credential IDs to include
-            challenge: Challenge from verifier (prevents replay)
-            domain: Domain of verifier
-
-        Returns:
-            Signed Verifiable Presentation
-        """
-        # Get credentials
-        credentials = []
-        for cred_id in credential_ids:
-            vc = self.credentials.get(cred_id)
-            if vc:
-                credentials.append(vc)
-
-        # Create presentation
-        vp = VerifiablePresentation(
-            id=f"urn:uuid:{uuid.uuid4()}",
-            holder=self.holder_did,
-            verifiableCredential=credentials
-        )
-
-        # Sign presentation
-        vp = self._sign_presentation(vp, challenge, domain)
-
-        return vp
-
-    def _sign_presentation(
-        self,
-        vp: VerifiablePresentation,
-        challenge: str,
-        domain: str
-    ) -> VerifiablePresentation:
-        """
-        Sign a presentation
-
-        Args:
-            vp: Unsigned presentation
-            challenge: Challenge from verifier
-            domain: Domain of verifier
-
-        Returns:
-            Signed presentation
-        """
-        # Create canonical representation
-        vp_dict = vp.to_dict()
-        vp_json = json.dumps(vp_dict, sort_keys=True)
-
-        # Include challenge and domain in signature
-        to_sign = f"{vp_json}{challenge}{domain}"
-        message_hash = hashlib.sha256(to_sign.encode()).digest()
-
-        # Sign
-        message = encode_defunct(message_hash)
-        signed_message = self.account.sign_message(message)
-
-        # Create proof
-        proof = {
-            "type": "EcdsaSecp256k1Signature2019",
-            "created": datetime.utcnow().isoformat() + "Z",
-            "proofPurpose": "authentication",
-            "verificationMethod": f"{self.holder_did}#keys-1",
-            "challenge": challenge,
-            "domain": domain,
-            "jws": signed_message.signature.hex()
-        }
-
-        vp.proof = proof
-
-        return vp
-
-    def selective_disclosure(
-        self,
-        credential_id: str,
-        disclosed_fields: List[str]
-    ) -> Optional[VerifiableCredential]:
-        """
-        Create credential with selective disclosure
-
-        Args:
-            credential_id: ID of credential
-            disclosed_fields: Fields to disclose
-
-        Returns:
-            Credential with only disclosed fields
-        """
-        vc = self.credentials.get(credential_id)
-        if not vc:
-            return None
-
-        # Create new credential with only disclosed fields
-        disclosed_subject = {
-            "id": vc.credentialSubject.get("id")
-        }
-
-        for field in disclosed_fields:
-            if field in vc.credentialSubject:
-                disclosed_subject[field] = vc.credentialSubject[field]
-
-        # Create new VC (would need ZKP for true selective disclosure)
-        disclosed_vc = VerifiableCredential(
-            context=vc.context,
-            id=vc.id,
-            type=vc.type,
-            issuer=vc.issuer,
-            issuanceDate=vc.issuanceDate,
-            credentialSubject=disclosed_subject,
-            expirationDate=vc.expirationDate,
-            credentialStatus=vc.credentialStatus,
-            proof=vc.proof
-        )
-
-        return disclosed_vc
-
-
-# ============ CREDENTIAL VERIFIER ============
 
 class CredentialVerifier:
     """
-    Verifiable Credential Verifier Service
+    Legacy-API verifier: zero-arg constructor, tuple-returning methods.
 
-    Capabilities:
-    - Verify credential signatures
-    - Check credential expiration
-    - Check credential revocation
-    - Verify presentations
-    - Validate credential schemas
+    Composes (rather than subclasses) the canonical verifier: the canonical
+    verify_presentation calls self.verify_credential internally and expects
+    a VerificationResult, so overriding it to return the legacy tuple would
+    break the parent's own pipeline.
     """
 
-    def __init__(self, revocation_registry: Optional[Dict] = None):
-        """
-        Initialize verifier
-
-        Args:
-            revocation_registry: Optional revocation registry
-        """
-        self.revocation_registry = revocation_registry or {}
-
-    def verify_credential(
-        self,
-        vc: VerifiableCredential
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """
-        Verify a verifiable credential
-
-        Args:
-            vc: Credential to verify
-
-        Returns:
-            (is_valid, verification_result)
-        """
-        result = {
-            "verified": False,
-            "checks": {
-                "signature": False,
-                "expiration": False,
-                "revocation": False,
-                "schema": False
-            },
-            "errors": []
-        }
-
-        # Check 1: Verify signature
-        signature_valid = self._verify_signature(vc)
-        result["checks"]["signature"] = signature_valid
-        if not signature_valid:
-            result["errors"].append("Invalid signature")
-
-        # Check 2: Check expiration
-        if vc.expirationDate:
-            expiration_valid = self._check_expiration(vc.expirationDate)
-            result["checks"]["expiration"] = expiration_valid
-            if not expiration_valid:
-                result["errors"].append("Credential expired")
-        else:
-            result["checks"]["expiration"] = True
-
-        # Check 3: Check revocation
-        revocation_valid = not self._is_revoked(vc)
-        result["checks"]["revocation"] = revocation_valid
-        if not revocation_valid:
-            result["errors"].append("Credential revoked")
-
-        # Check 4: Validate schema (basic)
-        schema_valid = self._validate_schema(vc)
-        result["checks"]["schema"] = schema_valid
-        if not schema_valid:
-            result["errors"].append("Invalid credential schema")
-
-        # Overall result
-        result["verified"] = all(result["checks"].values())
-
-        return result["verified"], result
-
-    def verify_presentation(
-        self,
-        vp: VerifiablePresentation,
-        challenge: str,
-        domain: str
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """
-        Verify a verifiable presentation
-
-        Args:
-            vp: Presentation to verify
-            challenge: Expected challenge
-            domain: Expected domain
-
-        Returns:
-            (is_valid, verification_result)
-        """
-        result = {
-            "verified": False,
-            "checks": {
-                "presentation_signature": False,
-                "challenge": False,
-                "credentials": []
-            },
-            "errors": []
-        }
-
-        # Check 1: Verify presentation signature
-        sig_valid = self._verify_presentation_signature(vp, challenge, domain)
-        result["checks"]["presentation_signature"] = sig_valid
-        if not sig_valid:
-            result["errors"].append("Invalid presentation signature")
-
-        # Check 2: Verify challenge matches
-        if vp.proof and vp.proof.get("challenge") == challenge:
-            result["checks"]["challenge"] = True
-        else:
-            result["checks"]["challenge"] = False
-            result["errors"].append("Challenge mismatch")
-
-        # Check 3: Verify each credential
-        all_credentials_valid = True
-        for vc in vp.verifiableCredential:
-            vc_valid, vc_result = self.verify_credential(vc)
-            result["checks"]["credentials"].append({
-                "id": vc.id,
-                "valid": vc_valid,
-                "result": vc_result
-            })
-            if not vc_valid:
-                all_credentials_valid = False
-
-        # Overall result
-        result["verified"] = (
-            result["checks"]["presentation_signature"] and
-            result["checks"]["challenge"] and
-            all_credentials_valid
+    def __init__(self,
+                 revocation_registry: Optional[RevocationRegistry] = None,
+                 trusted_issuers: Optional[TrustedIssuerRegistry] = None):
+        self._inner = _CanonicalVerifier(
+            revocation_registry=revocation_registry
+            or SHARED_REVOCATION_REGISTRY,
+            trusted_issuers=trusted_issuers or SHARED_TRUSTED_ISSUERS,
+            strict_schema=False,  # legacy demo claims predate the schemas
         )
 
-        return result["verified"], result
+    def verify_credential(self, credential: Any
+                          ) -> Tuple[bool, Dict[str, Any]]:
+        doc = _unwrap(credential)
+        if isinstance(doc, dict) and "verifiableCredential" in doc:
+            doc = doc["verifiableCredential"]
+        result: VerificationResult = self._inner.verify_credential(doc)
+        return result.valid, result.to_dict()
 
-    def _verify_signature(self, vc: VerifiableCredential) -> bool:
-        """Verify credential signature"""
-        # In production, would verify using issuer's public key from DID document
-        # For now, simplified check
-        return vc.proof is not None and "jws" in vc.proof
+    def verify_presentation(self, presentation: Any,
+                            expected_challenge: str,
+                            expected_domain: str
+                            ) -> Tuple[bool, Dict[str, Any]]:
+        return self._inner.verify_presentation(
+            _unwrap(presentation), expected_challenge, expected_domain,
+        )
 
-    def _check_expiration(self, expiration_date: str) -> bool:
-        """Check if credential is expired"""
-        try:
-            exp_dt = datetime.fromisoformat(expiration_date.replace("Z", "+00:00"))
-            return datetime.now(exp_dt.tzinfo) < exp_dt
-        except:
-            return False
 
-    def _is_revoked(self, vc: VerifiableCredential) -> bool:
-        """Check if credential is revoked"""
-        if vc.id in self.revocation_registry:
-            return self.revocation_registry[vc.id]
-        return False
+if __name__ == "__main__":
+    print("=== Shim self-test: real verification through the legacy API ===\n")
 
-    def _validate_schema(self, vc: VerifiableCredential) -> bool:
-        """Validate credential schema"""
-        # Basic validation
-        required_fields = ["context", "id", "type", "issuer", "issuanceDate", "credentialSubject"]
-        for field in required_fields:
-            if not getattr(vc, field, None):
-                return False
-        return True
+    issuer = CredentialIssuer("did:ethr:0x1:0xTESLA123", "0x" + "1" * 64,
+                              "Tesla Inc.")
+    wallet = HolderWallet("did:ethr:0x1:0xJOHNDOE123", "0x" + "2" * 64)
 
-    def _verify_presentation_signature(
-        self,
-        vp: VerifiablePresentation,
-        challenge: str,
-        domain: str
-    ) -> bool:
-        """Verify presentation signature"""
-        # Simplified - in production, verify using holder's public key
-        return vp.proof is not None and vp.proof.get("challenge") == challenge
+    vc = issuer.issue_credential(
+        "VehicleBirthCertificate", "did:ethr:0x1:0xVEHICLE123",
+        {"vin": "5YJ3E1EA0PF123456", "make": "Tesla",
+         "model": "Model S", "year": 2024},
+    )
+    print(f"Issued: {vc.id} (expires {vc.expirationDate})")
+
+    wallet.store_credential(vc)
+    vp = wallet.create_presentation([vc.id], challenge="nonce-1",
+                                    domain="demo.example")
+    verifier = CredentialVerifier()
+    ok, _ = verifier.verify_presentation(vp, "nonce-1", "demo.example")
+    print(f"Genuine presentation verifies: {ok} (must be True)")
+
+    # The check the old implementation failed: forgery must be rejected
+    forged = dict(vc.to_dict())
+    forged["credentialSubject"] = dict(forged["credentialSubject"],
+                                       vin="FORGED00000000000")
+    ok_forged, _ = verifier.verify_credential(forged)
+    print(f"Forged credential verifies: {ok_forged} (must be False)")
+
+    ok_replay, _ = verifier.verify_presentation(vp, "wrong-nonce",
+                                                "demo.example")
+    print(f"Replayed presentation verifies: {ok_replay} (must be False)")

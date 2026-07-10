@@ -167,6 +167,8 @@ class CredentialIssuer:
         validity_days: Optional[int] = 365,
         selective_disclosure: bool = False,
         revocable: bool = True,
+        enforce_schema: bool = True,
+        extra_contexts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Issue a signed Verifiable Credential.
@@ -187,10 +189,13 @@ class CredentialIssuer:
         """
         ok, errors = validate_claims(credential_type, claims)
         if not ok:
-            raise ValueError(
-                f"claims failed schema validation for {credential_type}: "
-                + "; ".join(errors)
-            )
+            if enforce_schema:
+                raise ValueError(
+                    f"claims failed schema validation for {credential_type}: "
+                    + "; ".join(errors)
+                )
+            # Non-strict mode (legacy/demo callers): issue anyway, but the
+            # credential is still cryptographically signed and verifiable.
         if not subject_did.startswith("did:"):
             raise ValueError(f"subject_did must be a DID, got: {subject_did}")
 
@@ -214,7 +219,7 @@ class CredentialIssuer:
             subject = {"id": subject_did, **claims}
 
         credential: Dict[str, Any] = {
-            "@context": [VC_CONTEXT_V2, CVIN_CONTEXT],
+            "@context": [VC_CONTEXT_V2, CVIN_CONTEXT] + list(extra_contexts or []),
             "id": credential_id,
             "type": ["VerifiableCredential", credential_type],
             "issuer": self.issuer_did,
