@@ -9,16 +9,15 @@
 
 ## 📊 Summary Statistics
 
-| Category | Files | Lines | Status | Test Coverage |
-|----------|-------|-------|--------|---------------|
-| Smart Contracts | 12 | ~3,500 | ✅ Complete | 85% |
-| W3C SSI Layer | 4 | ~1,100 | 🔄 60% | 40% |
-| CV2X Testbed | 0 | 0 | ⏳ Planned | 0% |
-| Comparison Framework | 0 | 0 | ⏳ Planned | 0% |
-| Documentation | 15 | ~4,000 | 🔄 70% | N/A |
-| CI/CD | 3 | ~225 | ✅ Complete | N/A |
-| Tests | 9 | ~2,500 | ✅ Complete | N/A |
-| **TOTAL** | **43** | **~11,325** | **40%** | **65%** |
+| Category | Status | Evidence |
+|----------|--------|----------|
+| Smart Contracts (all 9 standards) | ✅ Complete | 147 Hardhat tests passing |
+| W3C SSI Layer (DID + VC + MOBI VID) | ✅ Complete | 28 + 21 pytest passing; 93.2% measured W3C compliance |
+| CV2X Testbed (use cases + V2V + SUMO-sim) | 🔄 ~70% | 12/12 use cases; real-crypto V2V loop measured; mobility still simulated |
+| Comparison Framework | 🔄 80% | 9/9 standards gas-benchmarked, CSV + LaTeX generated |
+| Documentation | 🔄 75% | honest-claims cleanup done |
+| CI/CD | ✅ Complete | 3 workflows |
+| **OVERALL** | **~70%** | **196+ automated tests green** |
 
 ---
 
@@ -315,7 +314,7 @@ V1 birth 283,895 gas, V2 recordLifecycleEvent ~292.5k gas (measured)
 | W3C VC Layer | 100% (28 tests) | ✅ |
 | MOBI VID | 90% (21 tests; VIN encryption is demo-grade) | ✅ |
 | CV2X Testbed | 60% (12/12 use cases + 3/3 V2V scenarios real-verified; SUMO in simulate mode) | 🔄 |
-| Comparison Framework | 50% (4/9 standards gas-benchmarked, LaTeX/CSV generation; 5 standards lack contracts) | 🔄 |
+| Comparison Framework | 80% (9/9 standards gas-benchmarked incl. 4337 EntryPoint-indirection measurement, LaTeX/CSV generation; security analysis still qualitative-only) | 🔄 |
 | W3C Compliance | 93.2% measured (executable checker) | ✅ |
 | Documentation | 70% | 🔄 |
 | CI/CD | 100% | ✅ |

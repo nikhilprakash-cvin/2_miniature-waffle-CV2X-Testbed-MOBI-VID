@@ -1,9 +1,12 @@
-operation,ERC-1056 gasUsed,ERC-1056 rel. cost (x cheapest),ERC-721 gasUsed,ERC-721 rel. cost (x cheapest),ERC-725 gasUsed,ERC-725 rel. cost (x cheapest),MOBI-VID-V2 gasUsed,MOBI-VID-V2 rel. cost (x cheapest)
-Deploy registry,979720,1.00,2778046,2.84,—,—,3866570,3.95
-Create identity,52612,1.00,542429,10.31,528647,10.05,298923,5.68
-Update key/attribute,35512,1.00,119753,3.37,137107,3.86,306901,8.64
-Add delegate/claim,54853,1.56,48306,1.37,120007,3.40,35264,1.00
-Revoke,35065,1.27,27685,1.00,43410,1.57,74844,2.70
-Transfer ownership,51764,1.82,174707,6.15,28397,1.00,199996,7.04
+standard,Deploy registry gasUsed,Deploy registry rel. cost (x cheapest),Create identity gasUsed,Create identity rel. cost (x cheapest),Update key/attribute gasUsed,Update key/attribute rel. cost (x cheapest),Update via 4337 EntryPoint gasUsed,Update via 4337 EntryPoint rel. cost (x cheapest),Add delegate/claim gasUsed,Add delegate/claim rel. cost (x cheapest),Revoke gasUsed,Revoke rel. cost (x cheapest),Transfer ownership gasUsed,Transfer ownership rel. cost (x cheapest)
+ERC-1056,979720,2.13,52612,1.01,35512,1.01,—,—,54853,1.55,35065,1.38,51764,1.82
+ERC-721,2778046,6.03,542429,10.40,119753,3.41,—,—,48306,1.37,27685,1.09,174707,6.15
+ERC-725,—,—,528647,10.13,137107,3.91,—,—,120007,3.40,43410,1.71,28397,1.00
+ERC-735,—,—,1404108,26.91,75151,2.14,—,—,290249,8.23,72100,2.84,28704,1.01
+ERC-1155,2314487,5.02,103905,1.99,49156,1.40,—,—,57126,1.62,30641,1.20,83641,2.95
+ERC-4337,460882,1.00,768204,14.72,49366,1.41,96228,1.00,47560,1.35,25432,1.00,28561,1.01
+LSP8,1631155,3.54,149352,2.86,55065,1.57,—,—,—,—,41877,1.65,80526,2.84
+MOBI-VID-V2,3907814,8.48,298923,5.73,306923,8.75,—,—,35286,1.00,74844,2.94,200018,7.04
+CVIN-Combined,1363520,2.96,52178,1.00,35078,1.00,—,—,289923,8.22,73727,2.90,51734,1.82
 
-Conditions,"solc 0.8.24 (optimizer on, 200 runs, viaIR)",OpenZeppelin 5.0.2,network hardhat-local,measured 2026-07-10T00:34:52.331Z
+Conditions,"solc 0.8.24 (optimizer on, 200 runs, viaIR)",OpenZeppelin 5.0.2,network hardhat-local,measured 2026-07-13T00:32:43.436Z
