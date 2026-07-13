@@ -1,19 +1,41 @@
 #!/usr/bin/env python3
 """
-SUMO + MOBI VID Integration
-============================
+SUMO + Vehicle Identity Integration (Thrust 3: V2V latency budget)
+==================================================================
 
-Integrates SUMO traffic simulation with vehicle identity systems:
-- 50 vehicles spawned in SUMO
-- Each vehicle assigned MOBI VID or PKI certificate
-- Safety applications: FCW, EEBL, IMA
-- Real-time identity verification
-- Performance metrics collection
+Measures REAL identity-verification latency in a V2V message flow:
+
+- PKI population ("PKI"): IEEE 1609.2-style pseudonym certificates from
+  `identity/centralized_provider.py`. Every BSM is signed with real
+  ECDSA P-256 at send and verified with real ECDSA P-256 at receive.
+  Cold path (first contact with a pseudonym cert) additionally validates
+  the certificate chain against the CA; the cert public key is then
+  cached, so the warm path is a signature check only.
+
+- SSI population ("MOBI_VID"): each vehicle holds an Ethereum secp256k1
+  key, a did:ethr DID, and a W3C V2VSafetyCredential issued through the
+  canonical VC layer (`identity/w3c_verifiable_credentials.py` shim).
+  BSMs are signed per-message with EIP-191 personal-sign. Cold path
+  (first contact with a peer DID) performs full Verifiable Credential
+  verification (structure, validity window, revocation, issuer signature
+  recovery, subject/DID binding); the peer's address is then cached, so
+  the warm path is signature recovery + address comparison only.
+
+Cold (first-contact) and warm (per-message) latencies are recorded
+separately per population, and the verdict compares measured p95 against
+the 100 ms V2V safety budget and the 10 ms signature-check target.
+
+What is REAL: all signing, signature verification, certificate chain
+validation and VC verification (measured with time.perf_counter).
+What is MOCK: vehicle mobility in --simulate mode (no SUMO binary) and
+the radio channel (messages are delivered in-process; no network stack).
 
 Usage:
-    python sumo_identity_integration.py             # Run with SUMO if installed
-    python sumo_identity_integration.py --simulate  # Run simulation mode without SUMO
-    python sumo_identity_integration.py --gui       # Run with SUMO GUI
+    python3 sumo_identity_integration.py --simulate --duration 60
+    python3 sumo_identity_integration.py             # with SUMO installed
+    python3 sumo_identity_integration.py --gui       # with SUMO GUI
+
+Results are written to results/v2v_latency.json.
 """
 
 import sys
@@ -22,676 +44,920 @@ import time
 import json
 import random
 import math
+import hashlib
+import argparse
+import statistics
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
-from datetime import datetime
-from collections import defaultdict
+from datetime import datetime, timezone
 
-# Add parent to path
+# Add parent (cv2x-testbed) to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Try to import SUMO libraries
+# ---------------------------------------------------------------------------
+# Optional SUMO libraries
+# ---------------------------------------------------------------------------
 try:
-    import traci
-    import sumolib
+    import traci  # noqa: F401
     SUMO_AVAILABLE = True
 except ImportError:
-    print("⚠️  SUMO libraries not found - will run in simulation mode")
     SUMO_AVAILABLE = False
 
-# Import identity systems
+# ---------------------------------------------------------------------------
+# Real crypto / identity dependencies (REQUIRED — no simulated fallback)
+# ---------------------------------------------------------------------------
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from eth_account import Account
+from eth_account.messages import encode_defunct
+
+from identity.centralized_provider import CentralizedIdentityProvider
+from identity.w3c_verifiable_credentials import (
+    CredentialIssuer,
+    CredentialVerifier,
+)
+
 try:
-    from identity.centralized_vehicle_registry import CentralizedVehicleRegistry, IssuerRole
-    IDENTITY_AVAILABLE = True
-except (ImportError, Exception) as e:
-    print(f"⚠️  Identity systems not available: {type(e).__name__}")
-    print("   Running without blockchain identity integration")
-    IDENTITY_AVAILABLE = False
-    CentralizedVehicleRegistry = None
+    from identity.centralized_vehicle_registry import (
+        CentralizedVehicleRegistry,
+        IssuerRole,
+    )
+    REGISTRY_AVAILABLE = True
+except Exception:
+    REGISTRY_AVAILABLE = False
 
-    # Mock IssuerRole for type hints
-    class IssuerRole:
-        MANUFACTURER = "MANUFACTURER"
+# V2V performance targets (SAE J2945/1-derived thesis budget)
+V2V_BUDGET_MS = 100.0          # end-to-end identity verification budget
+SIG_CHECK_TARGET_MS = 10.0     # per-message signature-check target
 
+BSM_RATE_HZ = 10               # SAE J2735 BSM broadcast rate
+STEP_LENGTH_S = 0.1            # simulation step = 100 ms
+NEIGHBOR_RADIUS_M = 300.0      # DSRC/C-V2X plausible reception range
+MAX_NEIGHBORS = 8              # cap receivers per broadcast (runtime sanity)
+
+
+def _pki_payload_bytes(message: Dict[str, Any]) -> bytes:
+    """Serialization used by CentralizedIdentityProvider.sign_message."""
+    return json.dumps(message, sort_keys=True).encode()
+
+
+def _ssi_payload_bytes(message: Dict[str, Any]) -> bytes:
+    """Deterministic canonical JSON for SSI BSM signing."""
+    return json.dumps(message, sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _ssi_signable(message: Dict[str, Any]):
+    """EIP-191 signable message over sha256(canonical payload)."""
+    return encode_defunct(hashlib.sha256(_ssi_payload_bytes(message)).digest())
+
+
+def _cert_validity_window(cert) -> Tuple[datetime, datetime]:
+    """Validity window, tolerant of cryptography-library deprecations."""
+    try:
+        return cert.not_valid_before_utc, cert.not_valid_after_utc
+    except AttributeError:
+        nb = cert.not_valid_before.replace(tzinfo=timezone.utc)
+        na = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        return nb, na
+
+
+# ===========================================================================
+# Identity layers
+# ===========================================================================
+
+class PKIIdentityLayer:
+    """IEEE 1609.2-style PKI: pseudonym certificates + ECDSA P-256."""
+
+    def __init__(self):
+        self.provider = CentralizedIdentityProvider(ca_name="V2X-CA-CVIN")
+        self.ca_public_key = self.provider.ca_certificate.public_key()
+        # Per-receiver cache: receiver_id -> {cert_fingerprint: public_key}
+        self._cert_cache: Dict[str, Dict[str, Any]] = {}
+
+    def enroll(self, vehicle_id: str, metadata: Optional[Dict] = None):
+        return self.provider.register_vehicle(vehicle_id, metadata or {})
+
+    def sign(self, vehicle_id: str, message: Dict) -> Tuple[Dict, float]:
+        """Real ECDSA P-256 signature over the BSM payload."""
+        t0 = time.perf_counter()
+        signed = self.provider.sign_message(vehicle_id, message)
+        return signed, (time.perf_counter() - t0) * 1000.0
+
+    def verify(self, receiver_id: str, signed: Dict) -> Tuple[bool, float, bool]:
+        """
+        Verify at the receiver. Returns (ok, latency_ms, cold).
+
+        cold  = first contact with this pseudonym certificate: full chain
+                validation (CA signature, validity window, CRL) + message
+                signature verification, then cache the cert public key.
+        warm  = per-message ECDSA verify against the cached public key.
+        """
+        t0 = time.perf_counter()
+        cache = self._cert_cache.setdefault(receiver_id, {})
+        ok = False
+        try:
+            cert_pem: str = signed["certificate"]
+            signature = bytes.fromhex(signed["signature"])
+            payload = _pki_payload_bytes(signed["message"])
+            fingerprint = hashlib.sha256(cert_pem.encode()).hexdigest()
+
+            cold = fingerprint not in cache
+            if cold:
+                cert = x509.load_pem_x509_certificate(cert_pem.encode())
+                # 1. Certificate chain: pseudonym cert signed by our CA
+                self.ca_public_key.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    ec.ECDSA(cert.signature_hash_algorithm),
+                )
+                # 2. Validity window
+                not_before, not_after = _cert_validity_window(cert)
+                now = datetime.now(timezone.utc)
+                if not (not_before <= now <= not_after):
+                    raise ValueError("certificate outside validity window")
+                # 3. Revocation (CRL)
+                if cert.serial_number in self.provider.revocation_list:
+                    raise ValueError("certificate revoked")
+                public_key = cert.public_key()
+            else:
+                public_key = cache[fingerprint]
+
+            # 4. Message signature (every message)
+            public_key.verify(signature, payload, ec.ECDSA(hashes.SHA256()))
+            if cold:
+                cache[fingerprint] = public_key
+            ok = True
+        except Exception:
+            cold = True  # failures never warm the cache
+            ok = False
+        return ok, (time.perf_counter() - t0) * 1000.0, cold
+
+
+class SSIIdentityLayer:
+    """did:ethr + W3C Verifiable Credentials (canonical VC layer)."""
+
+    def __init__(self):
+        issuer_account = Account.create()
+        self.issuer = CredentialIssuer(
+            f"did:ethr:0x1:{issuer_account.address}",
+            issuer_account.key.hex(),
+            "CVIN Manufacturer Consortium",
+        )
+        self.verifier = CredentialVerifier()
+        # vehicle_id -> {"account", "did", "credential"}
+        self.wallets: Dict[str, Dict[str, Any]] = {}
+        # Per-receiver cache: receiver_id -> {sender_did: signing_address}
+        self._peer_cache: Dict[str, Dict[str, str]] = {}
+
+    def enroll(self, vehicle_id: str, vin: str, make: str, model: str,
+               year: int) -> Dict[str, Any]:
+        """Create a DID and issue a real V2VSafetyCredential to it."""
+        account = Account.create()
+        did = f"did:ethr:0x1:{account.address}"
+        credential = self.issuer.issue_credential(
+            credential_type="V2VSafetyCredential",
+            subject_did=did,
+            claims={
+                "vin": vin,
+                "vehicleId": vehicle_id,
+                "make": make,
+                "model": model,
+                "year": year,
+                "authorizedMessages": ["BSM", "DENM"],
+            },
+            validity_days=365,
+        )
+        wallet = {"account": account, "did": did, "credential": credential}
+        self.wallets[vehicle_id] = wallet
+        return wallet
+
+    def sign(self, vehicle_id: str, message: Dict) -> Tuple[Dict, float]:
+        """Real secp256k1 EIP-191 signature over the BSM payload."""
+        wallet = self.wallets[vehicle_id]
+        t0 = time.perf_counter()
+        signed = Account.sign_message(_ssi_signable(message),
+                                      wallet["account"].key)
+        package = {
+            "message": message,
+            "sender_did": wallet["did"],
+            "signature": signed.signature.hex(),
+            "credential": wallet["credential"],  # attached for first contact
+            "identity_type": "ssi_vc",
+        }
+        return package, (time.perf_counter() - t0) * 1000.0
+
+    def verify(self, receiver_id: str, package: Dict) -> Tuple[bool, float, bool]:
+        """
+        Verify at the receiver. Returns (ok, latency_ms, cold).
+
+        cold  = first contact with this DID: full VC verification (issuer
+                signature recovery, trusted-issuer check, validity window,
+                revocation) + subject/DID binding + BSM signature recovery,
+                then cache the peer's signing address.
+        warm  = per-message signature recovery + cached-address comparison.
+        """
+        t0 = time.perf_counter()
+        cache = self._peer_cache.setdefault(receiver_id, {})
+        ok = False
+        sender_did = package.get("sender_did", "")
+        cold = sender_did not in cache
+        try:
+            recovered = Account.recover_message(
+                _ssi_signable(package["message"]),
+                signature=package["signature"],
+            )
+            if not cold:
+                ok = (recovered.lower() == cache[sender_did].lower())
+            else:
+                credential = package.get("credential")
+                if credential is not None:
+                    valid, _report = self.verifier.verify_credential(credential)
+                    if valid:
+                        doc = credential.to_dict() if hasattr(
+                            credential, "to_dict") else credential
+                        subject = doc.get("credentialSubject", {})
+                        subject_did = subject.get("id", "")
+                        did_address = sender_did.rsplit(":", 1)[-1]
+                        if (subject_did == sender_did
+                                and recovered.lower() == did_address.lower()):
+                            cache[sender_did] = recovered
+                            ok = True
+        except Exception:
+            ok = False
+        return ok, (time.perf_counter() - t0) * 1000.0, cold
+
+
+# ===========================================================================
+# Data structures
+# ===========================================================================
 
 @dataclass
 class VehicleIdentity:
-    """Vehicle identity information"""
     vehicle_id: str
     vin: str
-    identity_type: str  # "MOBI_VID" or "PKI"
-    certificate_id: str
-    manufacturer: str
+    identity_type: str  # "MOBI_VID" (SSI/VC) or "PKI"
     make: str
     model: str
     year: int
-    public_key: str
-    mobi_vid_did: Optional[str] = None
-    pki_cert: Optional[str] = None
+    did: Optional[str] = None
 
 
 @dataclass
 class VehicleState:
-    """Real-time vehicle state"""
     vehicle_id: str
-    position: Tuple[float, float]  # (x, y)
-    speed: float  # m/s
-    heading: float  # degrees
+    position: Tuple[float, float]
+    speed: float
+    heading: float
     lane_id: str
     timestamp: float
 
 
 @dataclass
-class SafetyMessage:
-    """V2V safety message"""
-    message_id: str
-    sender_id: str
-    sender_identity: VehicleIdentity
-    message_type: str  # "BSM", "DENM", "FCW", "EEBL", "IMA"
-    position: Tuple[float, float]
-    speed: float
-    heading: float
-    timestamp: float
-    emergency: bool = False
-    signature: Optional[str] = None
+class PopulationStats:
+    sign_ms: List[float] = field(default_factory=list)
+    cold_ms: List[float] = field(default_factory=list)
+    warm_ms: List[float] = field(default_factory=list)
+    sent: int = 0
+    verified: int = 0
+    failed: int = 0
 
 
 @dataclass
-class PerformanceMetrics:
-    """Performance tracking"""
-    total_messages: int = 0
-    messages_verified: int = 0
-    messages_failed: int = 0
-    avg_verification_time_ms: float = 0.0
-    avg_identity_resolution_ms: float = 0.0
+class Metrics:
+    messages_sent: int = 0          # signed broadcasts
+    messages_delivered: int = 0     # receiver deliveries (sent x neighbors)
+    messages_verified: int = 0      # successful receiver verifications
+    verification_failures: int = 0
     safety_events_detected: int = 0
-    collisions_prevented: int = 0
-    verification_times: List[float] = field(default_factory=list)
+    eebl_warnings_delivered: int = 0
+    pki: PopulationStats = field(default_factory=PopulationStats)
+    ssi: PopulationStats = field(default_factory=PopulationStats)
 
+
+def summarize(samples: List[float]) -> Optional[Dict[str, float]]:
+    """Median/p95 summary from real samples; None when there is no data."""
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    n = len(ordered)
+
+    def pct(p: float) -> float:
+        return ordered[min(n - 1, max(0, math.ceil(p / 100.0 * n) - 1))]
+
+    return {
+        "n": n,
+        "mean_ms": round(statistics.fmean(ordered), 4),
+        "median_ms": round(statistics.median(ordered), 4),
+        "p95_ms": round(pct(95.0), 4),
+        "min_ms": round(ordered[0], 4),
+        "max_ms": round(ordered[-1], 4),
+    }
+
+
+# ===========================================================================
+# Mock mobility (used only in --simulate mode; SUMO provides real mobility)
+# ===========================================================================
+
+class MockMobility:
+    """Persistent kinematic model: vehicles on a 5 km, 3-lane highway."""
+
+    HIGHWAY_LENGTH_M = 5000.0
+
+    def __init__(self, num_vehicles: int, rng: random.Random):
+        self.rng = rng
+        self.states: Dict[str, VehicleState] = {}
+        for i in range(num_vehicles):
+            vid = f"veh_{i:03d}"
+            lane = i % 3
+            self.states[vid] = VehicleState(
+                vehicle_id=vid,
+                position=(rng.uniform(0.0, self.HIGHWAY_LENGTH_M),
+                          500.0 + lane * 3.5),
+                speed=rng.uniform(20.0, 30.0),   # ~72-108 km/h
+                heading=90.0,                    # eastbound
+                lane_id=f"highway_east_{lane}",
+                timestamp=0.0,
+            )
+
+    def step(self, sim_time: float, dt: float = STEP_LENGTH_S):
+        for st in self.states.values():
+            st.speed = min(32.0, max(15.0,
+                           st.speed + self.rng.uniform(-0.3, 0.3)))
+            x = (st.position[0] + st.speed * dt) % self.HIGHWAY_LENGTH_M
+            st.position = (x, st.position[1])
+            st.timestamp = sim_time
+
+    def vehicle_ids(self) -> List[str]:
+        return list(self.states.keys())
+
+
+# ===========================================================================
+# Main integration
+# ===========================================================================
 
 class SUMOIdentityIntegration:
-    """Main integration class"""
 
-    def __init__(self, simulation_mode=False, use_gui=False):
+    def __init__(self, simulation_mode=False, use_gui=False,
+                 num_vehicles=50, seed=42,
+                 results_path: Optional[Path] = None):
         self.simulation_mode = simulation_mode or not SUMO_AVAILABLE
         self.use_gui = use_gui
+        self.num_vehicles = num_vehicles
+        self.rng = random.Random(seed)
         self.running = False
 
-        # Vehicle tracking
-        self.vehicles: Dict[str, VehicleIdentity] = {}
-        self.vehicle_states: Dict[str, VehicleState] = {}
-
-        # Identity registry
-        if IDENTITY_AVAILABLE:
-            self.registry = CentralizedVehicleRegistry()
-            self._setup_identity_issuers()
-        else:
-            self.registry = None
-
-        # Safety application state
-        self.platoons: Dict[str, List[str]] = {}  # leader_id -> [follower_ids]
-        self.emergency_vehicles: set = set()
-
-        # Metrics
-        self.metrics = PerformanceMetrics()
-
-        # SUMO configuration
         self.sumo_dir = Path(__file__).parent
         self.sumo_cfg = self.sumo_dir / "simulation.sumocfg"
+        self.results_path = results_path or (
+            self.sumo_dir / "results" / "v2v_latency.json")
 
-    def _setup_identity_issuers(self):
-        """Authorize identity issuers"""
-        if not self.registry:
-            return
+        # Identity layers (REAL crypto)
+        self.pki = PKIIdentityLayer()
+        self.ssi = SSIIdentityLayer()
 
-        manufacturers = [
-            ("tesla", "Tesla Inc.", "MFG-US-TESLA"),
-            ("ford", "Ford Motor Co.", "MFG-US-FORD"),
-            ("gm", "General Motors", "MFG-US-GM"),
-            ("toyota", "Toyota Motor Corp.", "MFG-JP-TOYOTA"),
-            ("honda", "Honda Motor Co.", "MFG-JP-HONDA"),
-        ]
+        # Optional provenance registry for the MOBI VID population
+        self.registry = None
+        if REGISTRY_AVAILABLE:
+            try:
+                self.registry = CentralizedVehicleRegistry()
+                self.registry.authorize_issuer(
+                    "cvin_mfg", "CVIN Manufacturer Consortium",
+                    IssuerRole.MANUFACTURER, "MFG-CVIN")
+            except Exception:
+                self.registry = None
 
-        for mfg_id, name, license in manufacturers:
-            self.registry.authorize_issuer(mfg_id, name, IssuerRole.MANUFACTURER, license)
+        self.vehicles: Dict[str, VehicleIdentity] = {}
+        self.vehicle_states: Dict[str, VehicleState] = {}
+        self.mobility: Optional[MockMobility] = None
+        self.metrics = Metrics()
+        self.attack_results: Dict[str, bool] = {}
+        self._seq = 0
+
+    # ------------------------------------------------------------------
+    # SUMO lifecycle
+    # ------------------------------------------------------------------
 
     def start_sumo(self):
-        """Start SUMO simulation"""
         if self.simulation_mode:
-            print("🎮 Running in SIMULATION MODE (no SUMO)")
+            print("Running in SIMULATION MODE (mock mobility, real crypto)")
+            self.mobility = MockMobility(self.num_vehicles, self.rng)
             return
-
-        print("🚗 Starting SUMO traffic simulation...")
-
-        # SUMO command
-        if self.use_gui:
-            sumo_binary = "sumo-gui"
-        else:
-            sumo_binary = "sumo"
-
+        print("Starting SUMO traffic simulation...")
+        sumo_binary = "sumo-gui" if self.use_gui else "sumo"
         sumo_cmd = [
-            sumo_binary,
-            "-c", str(self.sumo_cfg),
-            "--step-length", "0.1",  # 100ms timestep
-            "--collision.action", "warn",
-            "--no-warnings"
+            sumo_binary, "-c", str(self.sumo_cfg),
+            "--step-length", str(STEP_LENGTH_S),
+            "--collision.action", "warn", "--no-warnings",
         ]
-
         try:
             traci.start(sumo_cmd)
-            print(f"✅ SUMO started ({sumo_binary})")
+            print(f"SUMO started ({sumo_binary})")
             self.running = True
         except Exception as e:
-            print(f"❌ Failed to start SUMO: {e}")
-            print("   Falling back to simulation mode")
+            print(f"Failed to start SUMO: {e} — falling back to simulation mode")
             self.simulation_mode = True
+            self.mobility = MockMobility(self.num_vehicles, self.rng)
 
     def stop_sumo(self):
-        """Stop SUMO simulation"""
         if not self.simulation_mode and self.running:
             traci.close()
-            print("🛑 SUMO stopped")
+            print("SUMO stopped")
         self.running = False
 
-    def assign_vehicle_identity(self, vehicle_id: str, sumo_type: str) -> VehicleIdentity:
-        """Assign MOBI VID or PKI identity to vehicle"""
+    # ------------------------------------------------------------------
+    # Identity enrollment
+    # ------------------------------------------------------------------
 
-        # Determine manufacturer based on vehicle type
+    def assign_vehicle_identity(self, vehicle_id: str,
+                                sumo_type: str = "passenger_car") -> VehicleIdentity:
         mfg_map = {
-            "passenger_car": ("tesla", "Tesla", "Model 3", 2024),
-            "delivery_truck": ("ford", "Ford", "Transit", 2024),
-            "semi_truck": ("gm", "Freightliner", "Cascadia", 2023),
-            "emergency": ("ford", "Ford", "Explorer", 2024)
+            "passenger_car": ("Tesla", "Model 3", 2024),
+            "delivery_truck": ("Ford", "Transit", 2024),
+            "semi_truck": ("Freightliner", "Cascadia", 2023),
+            "emergency": ("Ford", "Explorer", 2024),
         }
-
-        mfg_id, make, model, year = mfg_map.get(sumo_type, ("tesla", "Tesla", "Model 3", 2024))
-
-        # Generate VIN
+        make, model, year = mfg_map.get(sumo_type, mfg_map["passenger_car"])
         vin = self._generate_vin(make, year, vehicle_id)
 
-        # Randomly assign identity type (70% MOBI VID, 30% PKI)
-        identity_type = "MOBI_VID" if random.random() < 0.7 else "PKI"
+        # Deterministic 70/30 split: 70% SSI ("MOBI_VID"), 30% PKI
+        index = len(self.vehicles)
+        identity_type = "MOBI_VID" if index % 10 < 7 else "PKI"
 
-        # Register with identity system
-        certificate_id = f"CERT_{vehicle_id}_{int(time.time())}"
+        did = None
+        if identity_type == "MOBI_VID":
+            wallet = self.ssi.enroll(vehicle_id, vin, make, model, year)
+            did = wallet["did"]
+            if self.registry is not None:
+                try:
+                    self.registry.register_vehicle_birth(
+                        vin=vin, manufacturer=f"{make} Inc.", make=make,
+                        model=model, year=year, color="Various",
+                        first_owner=f"owner_{vehicle_id}",
+                        manufacturer_id="cvin_mfg")
+                except Exception:
+                    pass
+        else:
+            self.pki.enroll(vehicle_id, {"vin": vin, "make": make})
 
-        if self.registry and identity_type == "MOBI_VID":
-            # Register birth certificate
-            cert = self.registry.register_vehicle_birth(
-                vin=vin,
-                manufacturer=f"{make} Inc.",
-                make=make,
-                model=model,
-                year=year,
-                color="Various",
-                first_owner=f"owner_{vehicle_id}",
-                manufacturer_id=mfg_id
-            )
-            certificate_id = cert.certificate_id
-
-        # Create identity
         identity = VehicleIdentity(
-            vehicle_id=vehicle_id,
-            vin=vin,
-            identity_type=identity_type,
-            certificate_id=certificate_id,
-            manufacturer=f"{make} Inc.",
-            make=make,
-            model=model,
-            year=year,
-            public_key=f"0x{random.randbytes(32).hex()}",
-            mobi_vid_did=f"did:mobi:{vin}" if identity_type == "MOBI_VID" else None,
-            pki_cert=f"PKI-{certificate_id}" if identity_type == "PKI" else None
-        )
-
+            vehicle_id=vehicle_id, vin=vin, identity_type=identity_type,
+            make=make, model=model, year=year, did=did)
         self.vehicles[vehicle_id] = identity
-
         return identity
 
     def _generate_vin(self, make: str, year: int, vehicle_id: str) -> str:
-        """Generate realistic VIN"""
-        # Simplified VIN generation
-        wmi = {
-            "Tesla": "5YJ",
-            "Ford": "1FT",
-            "Freightliner": "1FU",
-            "Toyota": "4T1",
-            "Honda": "1HG"
-        }.get(make, "XXX")
-
-        # Year code (simplified)
+        wmi = {"Tesla": "5YJ", "Ford": "1FT", "Freightliner": "1FU"}.get(make, "XXX")
         year_code = chr(65 + (year - 2020))
+        serial = "".join(c for c in vehicle_id if c.isalnum())[-10:].zfill(10).upper()
+        return f"{wmi}{year_code}{serial[:13]}"
 
-        # Random serial
-        serial = vehicle_id[-10:].zfill(10).upper()
-
-        return f"{wmi}{year_code}{serial[:14]}"
+    # ------------------------------------------------------------------
+    # Vehicle state
+    # ------------------------------------------------------------------
 
     def get_vehicle_state(self, vehicle_id: str) -> Optional[VehicleState]:
-        """Get current vehicle state from SUMO or simulation"""
-
         if self.simulation_mode:
-            # Simulate vehicle state
-            t = time.time()
-            # Vehicles moving along highway
-            progress = (t % 100) / 100.0  # 0 to 1 over 100 seconds
-            x = progress * 5000.0  # 5km highway
-            y = 500.0 + random.uniform(-50, 50)
-            speed = 25.0 + random.uniform(-5, 5)  # ~90 km/h
-            heading = 90.0
-
+            return self.mobility.states.get(vehicle_id)
+        try:
+            pos = traci.vehicle.getPosition(vehicle_id)
             return VehicleState(
-                vehicle_id=vehicle_id,
-                position=(x, y),
-                speed=speed,
-                heading=heading,
-                lane_id="highway_west_1",
-                timestamp=t
-            )
+                vehicle_id=vehicle_id, position=pos,
+                speed=traci.vehicle.getSpeed(vehicle_id),
+                heading=traci.vehicle.getAngle(vehicle_id),
+                lane_id=traci.vehicle.getLaneID(vehicle_id),
+                timestamp=time.time())
+        except Exception:
+            return None
 
-        else:
-            # Get from SUMO
-            try:
-                pos = traci.vehicle.getPosition(vehicle_id)
-                speed = traci.vehicle.getSpeed(vehicle_id)
-                heading = traci.vehicle.getAngle(vehicle_id)
-                lane = traci.vehicle.getLaneID(vehicle_id)
+    def _neighbors(self, vehicle_id: str) -> List[str]:
+        """Up to MAX_NEIGHBORS nearest vehicles within radio range."""
+        state = self.vehicle_states.get(vehicle_id)
+        if state is None:
+            return []
+        candidates = []
+        for other_id, other in self.vehicle_states.items():
+            if other_id == vehicle_id:
+                continue
+            d = math.dist(state.position, other.position)
+            if d <= NEIGHBOR_RADIUS_M:
+                candidates.append((d, other_id))
+        candidates.sort()
+        return [vid for _, vid in candidates[:MAX_NEIGHBORS]]
 
-                return VehicleState(
-                    vehicle_id=vehicle_id,
-                    position=pos,
-                    speed=speed,
-                    heading=heading,
-                    lane_id=lane,
-                    timestamp=time.time()
-                )
-            except Exception:
-                return None
+    # ------------------------------------------------------------------
+    # V2V message path (REAL sign at send, REAL verify at receive)
+    # ------------------------------------------------------------------
 
-    def verify_vehicle_identity(self, identity: VehicleIdentity) -> Tuple[bool, float]:
-        """Verify vehicle identity (simulate verification time)"""
-
-        start = time.time()
-
-        if identity.identity_type == "MOBI_VID":
-            # MOBI VID verification (blockchain lookup)
-            # Simulated time: 50-100ms
-            time.sleep(random.uniform(0.05, 0.1))
-
-            # Check if birth certificate exists
-            if self.registry:
-                vehicle_id = f"vehicle_{identity.certificate_id}"
-                try:
-                    history = self.registry.get_vehicle_history(vehicle_id)
-                    is_valid = history is not None
-                except:
-                    is_valid = True  # Assume valid for demo
-            else:
-                is_valid = True
-
-        else:  # PKI
-            # PKI verification (certificate chain)
-            # Simulated time: 5-10ms
-            time.sleep(random.uniform(0.005, 0.01))
-            is_valid = True
-
-        elapsed_ms = (time.time() - start) * 1000
-        self.metrics.verification_times.append(elapsed_ms)
-
-        return is_valid, elapsed_ms
-
-    def broadcast_safety_message(self, vehicle_id: str, message_type: str, emergency=False) -> SafetyMessage:
-        """Broadcast V2V safety message"""
-
+    def _build_bsm(self, vehicle_id: str, message_type: str,
+                   sim_time: float, emergency: bool) -> Optional[Dict]:
+        state = self.vehicle_states.get(vehicle_id)
         identity = self.vehicles.get(vehicle_id)
-        state = self.get_vehicle_state(vehicle_id)
-
-        if not identity or not state:
+        if state is None or identity is None:
             return None
+        self._seq += 1
+        return {
+            "msg_type": message_type,
+            "seq": self._seq,
+            "sender": vehicle_id,
+            "timestamp": round(sim_time, 3),
+            "position": [round(state.position[0], 2),
+                         round(state.position[1], 2)],
+            "speed": round(state.speed, 2),
+            "heading": round(state.heading, 1),
+            "emergency": emergency,
+        }
 
-        message = SafetyMessage(
-            message_id=f"MSG_{int(time.time() * 1000)}_{vehicle_id}",
-            sender_id=vehicle_id,
-            sender_identity=identity,
-            message_type=message_type,
-            position=state.position,
-            speed=state.speed,
-            heading=state.heading,
-            timestamp=state.timestamp,
-            emergency=emergency,
-            signature=f"SIG_{identity.public_key[:16]}"
-        )
+    def broadcast(self, vehicle_id: str, sim_time: float,
+                  message_type: str = "BSM", emergency: bool = False) -> int:
+        """Sign once, deliver to nearest neighbors, verify at each receiver.
 
-        self.metrics.total_messages += 1
+        Returns the number of receivers that verified the message."""
+        identity = self.vehicles.get(vehicle_id)
+        payload = self._build_bsm(vehicle_id, message_type, sim_time, emergency)
+        if identity is None or payload is None:
+            return 0
 
-        return message
+        pop = self.metrics.ssi if identity.identity_type == "MOBI_VID" \
+            else self.metrics.pki
+        layer = self.ssi if identity.identity_type == "MOBI_VID" else self.pki
 
-    def verify_safety_message(self, message: SafetyMessage) -> bool:
-        """Verify safety message identity"""
+        package, sign_ms = layer.sign(vehicle_id, payload)
+        pop.sign_ms.append(sign_ms)
+        pop.sent += 1
+        self.metrics.messages_sent += 1
 
-        # Verify sender identity
-        is_valid, verify_time = self.verify_vehicle_identity(message.sender_identity)
-
-        if is_valid:
-            self.metrics.messages_verified += 1
-        else:
-            self.metrics.messages_failed += 1
-
-        # Update average verification time
-        if self.metrics.verification_times:
-            self.metrics.avg_verification_time_ms = sum(self.metrics.verification_times) / len(self.metrics.verification_times)
-
-        return is_valid
-
-    # ============ SAFETY APPLICATIONS ============
-
-    def forward_collision_warning(self, vehicle_id: str) -> Optional[str]:
-        """Forward Collision Warning (FCW)"""
-
-        state = self.get_vehicle_state(vehicle_id)
-        if not state:
-            return None
-
-        # Check for vehicles ahead on same lane
-        for other_id, other_state in self.vehicle_states.items():
-            if other_id == vehicle_id:
-                continue
-
-            # Same lane?
-            if other_state.lane_id != state.lane_id:
-                continue
-
-            # Ahead?
-            if state.heading == 90:  # East
-                ahead = other_state.position[0] > state.position[0]
-            elif state.heading == 270:  # West
-                ahead = other_state.position[0] < state.position[0]
+        verified_count = 0
+        for receiver_id in self._neighbors(vehicle_id):
+            ok, latency_ms, cold = layer.verify(receiver_id, package)
+            self.metrics.messages_delivered += 1
+            if ok:
+                (pop.cold_ms if cold else pop.warm_ms).append(latency_ms)
+                pop.verified += 1
+                self.metrics.messages_verified += 1
+                verified_count += 1
             else:
+                pop.failed += 1
+                self.metrics.verification_failures += 1
+        return verified_count
+
+    # ------------------------------------------------------------------
+    # Safety applications (ride on the verified message flow)
+    # ------------------------------------------------------------------
+
+    def forward_collision_warning(self, vehicle_id: str,
+                                  sim_time: float) -> Optional[str]:
+        state = self.vehicle_states.get(vehicle_id)
+        if state is None:
+            return None
+        for other_id, other in self.vehicle_states.items():
+            if other_id == vehicle_id or other.lane_id != state.lane_id:
                 continue
-
-            if not ahead:
+            dx = other.position[0] - state.position[0]
+            if dx <= 0:  # eastbound: ahead means larger x
                 continue
-
-            # Calculate distance
-            distance = math.dist(state.position, other_state.position)
-
-            # Calculate time to collision
-            relative_speed = state.speed - other_state.speed
-
-            if relative_speed <= 0:
-                continue  # Not closing in
-
-            time_to_collision = distance / relative_speed
-
-            # Warn if collision within 3 seconds
-            if time_to_collision < 3.0:
-                # Broadcast warning
-                message = self.broadcast_safety_message(vehicle_id, "FCW", emergency=True)
+            closing = state.speed - other.speed
+            if closing <= 0:
+                continue
+            ttc = dx / closing
+            if ttc < 3.0:
+                self.broadcast(vehicle_id, sim_time, "FCW", emergency=True)
                 self.metrics.safety_events_detected += 1
-
-                return f"⚠️  FCW: Collision risk in {time_to_collision:.1f}s (distance: {distance:.1f}m)"
-
+                return (f"FCW: {vehicle_id} -> {other_id} "
+                        f"TTC {ttc:.1f}s (gap {dx:.0f}m)")
         return None
 
-    def emergency_electronic_brake_light(self, vehicle_id: str, hard_braking=True):
-        """Emergency Electronic Brake Light (EEBL)"""
-
-        if not hard_braking:
+    def emergency_electronic_brake_light(self, vehicle_id: str,
+                                         sim_time: float):
+        """Hard-brake event: EEBL/DENM broadcast through the signed path."""
+        state = self.vehicle_states.get(vehicle_id)
+        if state is None:
             return
+        state.speed = max(0.0, state.speed - 8.0)  # hard deceleration
+        warned = self.broadcast(vehicle_id, sim_time, "EEBL", emergency=True)
+        self.metrics.safety_events_detected += 1
+        self.metrics.eebl_warnings_delivered += warned
+        print(f"  EEBL: {vehicle_id} hard braking at t={sim_time:.1f}s "
+              f"— {warned} neighbors verified the warning")
 
-        # Broadcast EEBL message
-        message = self.broadcast_safety_message(vehicle_id, "EEBL", emergency=True)
+    # ------------------------------------------------------------------
+    # Attack injection tests
+    # ------------------------------------------------------------------
 
-        print(f"🚨 EEBL: {vehicle_id} hard braking!")
+    def run_attack_tests(self, sim_time: float):
+        """Tampered and unknown-sender messages MUST be rejected."""
+        print("\nAttack injection tests:")
+        pki_vehicles = [v for v in self.vehicles.values()
+                        if v.identity_type == "PKI"]
+        ssi_vehicles = [v for v in self.vehicles.values()
+                        if v.identity_type == "MOBI_VID"]
 
-        # Vehicles behind should receive and verify
-        state = self.get_vehicle_state(vehicle_id)
+        # 1. Tampered PKI message (payload modified after signing)
+        if pki_vehicles:
+            vid = pki_vehicles[0].vehicle_id
+            payload = self._build_bsm(vid, "BSM", sim_time, False)
+            package, _ = self.pki.sign(vid, payload)
+            package["message"] = dict(package["message"],
+                                      speed=package["message"]["speed"] + 30.0)
+            ok, _, _ = self.pki.verify("attack_probe_rx", package)
+            self.attack_results["tampered_pki_rejected"] = not ok
+            if not ok:
+                self.metrics.verification_failures += 1
+                self.metrics.pki.failed += 1
+            print(f"  Tampered PKI BSM rejected:        {not ok}")
 
-        warned_count = 0
-        for other_id in self.vehicles.keys():
-            if other_id == vehicle_id:
-                continue
+        # 2. Tampered SSI message (position falsification after signing)
+        if ssi_vehicles:
+            vid = ssi_vehicles[0].vehicle_id
+            payload = self._build_bsm(vid, "BSM", sim_time, False)
+            package, _ = self.ssi.sign(vid, payload)
+            package["message"] = dict(package["message"],
+                                      position=[0.0, 0.0])
+            ok, _, _ = self.ssi.verify("attack_probe_rx", package)
+            self.attack_results["tampered_ssi_rejected"] = not ok
+            if not ok:
+                self.metrics.verification_failures += 1
+                self.metrics.ssi.failed += 1
+            print(f"  Tampered SSI BSM rejected:        {not ok}")
 
-            other_state = self.get_vehicle_state(other_id)
+        # 3. Unknown / uncredentialed sender (valid key, no credential)
+        rogue = Account.create()
+        rogue_did = f"did:ethr:0x1:{rogue.address}"
+        payload = {"msg_type": "BSM", "seq": -1, "sender": "rogue_001",
+                   "timestamp": round(sim_time, 3),
+                   "position": [100.0, 500.0], "speed": 25.0,
+                   "heading": 90.0, "emergency": False}
+        signed = Account.sign_message(_ssi_signable(payload), rogue.key)
+        package = {"message": payload, "sender_did": rogue_did,
+                   "signature": signed.signature.hex(),
+                   "credential": None, "identity_type": "ssi_vc"}
+        ok, _, _ = self.ssi.verify("attack_probe_rx", package)
+        self.attack_results["uncredentialed_sender_rejected"] = not ok
+        if not ok:
+            self.metrics.verification_failures += 1
+            self.metrics.ssi.failed += 1
+        print(f"  Uncredentialed sender rejected:   {not ok}")
 
-            if not other_state or other_state.lane_id != state.lane_id:
-                continue
+    # ------------------------------------------------------------------
+    # Simulation loop
+    # ------------------------------------------------------------------
 
-            # Behind?
-            if state.heading == 90:  # East
-                behind = other_state.position[0] < state.position[0]
-            else:
-                behind = other_state.position[0] > state.position[0]
+    def run_simulation(self, duration_seconds=60):
+        print(f"\n{'=' * 80}")
+        print("SUMO + VEHICLE IDENTITY INTEGRATION — "
+              "REAL CRYPTOGRAPHIC V2V VERIFICATION")
+        print(f"{'=' * 80}\n")
+        print(f"Simulated duration: {duration_seconds}s "
+              f"({int(duration_seconds / STEP_LENGTH_S)} steps of "
+              f"{int(STEP_LENGTH_S * 1000)}ms, BSMs at {BSM_RATE_HZ} Hz)")
+        print(f"Mode: {'SIMULATION (mock mobility)' if self.simulation_mode else 'SUMO'}")
+        print("Crypto: PKI = ECDSA P-256 (IEEE 1609.2-style pseudonym certs); "
+              "SSI = secp256k1 EIP-191 + W3C VC")
+        print(f"Radio model: in-process delivery, {NEIGHBOR_RADIUS_M:.0f}m radius, "
+              f"<= {MAX_NEIGHBORS} nearest receivers per broadcast\n")
 
-            if behind:
-                distance = math.dist(state.position, other_state.position)
-                if distance < 200:  # Within 200m
-                    # Verify message
-                    if self.verify_safety_message(message):
-                        print(f"   → {other_id} received and verified EEBL (distance: {distance:.1f}m)")
-                        warned_count += 1
-
-        self.metrics.collisions_prevented += warned_count
-
-    def intersection_movement_assist(self, vehicle_id: str) -> Optional[str]:
-        """Intersection Movement Assist (IMA)"""
-
-        state = self.get_vehicle_state(vehicle_id)
-        if not state:
-            return None
-
-        # Check if approaching intersection
-        intersection_pos = (2500.0, 500.0)
-        distance_to_intersection = math.dist(state.position, intersection_pos)
-
-        if distance_to_intersection > 100:  # More than 100m away
-            return None
-
-        # Check for conflicting vehicles
-        for other_id, other_state in self.vehicle_states.items():
-            if other_id == vehicle_id:
-                continue
-
-            other_distance = math.dist(other_state.position, intersection_pos)
-
-            if other_distance > 100:
-                continue
-
-            # Perpendicular approach?
-            heading_diff = abs(state.heading - other_state.heading)
-
-            if 80 < heading_diff < 100 or 260 < heading_diff < 280:
-                # Perpendicular - potential collision
-                # Calculate time to intersection
-                ttc_self = distance_to_intersection / max(state.speed, 0.1)
-                ttc_other = other_distance / max(other_state.speed, 0.1)
-
-                if abs(ttc_self - ttc_other) < 2.0:  # Both arrive within 2 seconds
-                    # Broadcast warning
-                    message = self.broadcast_safety_message(vehicle_id, "IMA", emergency=True)
-                    self.metrics.safety_events_detected += 1
-
-                    return f"⚠️  IMA: Intersection collision risk with {other_id}"
-
-        return None
-
-    # ============ PLATOON MANAGEMENT ============
-
-    def create_platoon(self, leader_id: str, follower_ids: List[str]):
-        """Create vehicle platoon"""
-        self.platoons[leader_id] = follower_ids
-
-        print(f"🚛 Platoon created: Leader={leader_id}, Followers={len(follower_ids)}")
-
-        # All platoon members must have verified identities
-        for vehicle_id in [leader_id] + follower_ids:
-            identity = self.vehicles.get(vehicle_id)
-            if identity:
-                is_valid, verify_time = self.verify_vehicle_identity(identity)
-                print(f"   → {vehicle_id}: {identity.identity_type} verified in {verify_time:.2f}ms")
-
-    # ============ SIMULATION LOOP ============
-
-    def run_simulation(self, duration_seconds=300):
-        """Run simulation for specified duration"""
-
-        print(f"\n{'='*80}")
-        print("🚗 SUMO + MOBI VID INTEGRATION SIMULATION")
-        print(f"{'='*80}\n")
-
-        print(f"Duration: {duration_seconds}s")
-        print(f"Mode: {'SIMULATION' if self.simulation_mode else 'SUMO'}")
-        print(f"Identity System: {'✅ Active' if self.registry else '❌ Disabled'}")
-        print()
-
-        # Start SUMO
         self.start_sumo()
-
-        start_time = time.time()
-        step = 0
+        wall_start = time.time()
+        total_steps = int(duration_seconds / STEP_LENGTH_S)
+        sim_time = 0.0
 
         try:
-            while time.time() - start_time < duration_seconds:
+            for step in range(total_steps):
+                sim_time = step * STEP_LENGTH_S
 
                 if not self.simulation_mode:
-                    # SUMO simulation step
                     traci.simulationStep()
-
-                    # Get active vehicles
-                    vehicle_ids = traci.vehicle.getIDList()
+                    vehicle_ids = list(traci.vehicle.getIDList())
                 else:
-                    # Simulation mode: create fake vehicle list
-                    vehicle_ids = [f"veh_{i:03d}" for i in range(50)]
+                    self.mobility.step(sim_time)
+                    vehicle_ids = self.mobility.vehicle_ids()
 
-                # Assign identities to new vehicles
+                # Enroll new vehicles (real key generation + issuance)
                 for vehicle_id in vehicle_ids:
                     if vehicle_id not in self.vehicles:
-                        # Get vehicle type
+                        vtype = "passenger_car"
                         if not self.simulation_mode:
                             try:
                                 vtype = traci.vehicle.getTypeID(vehicle_id)
-                            except:
-                                vtype = "passenger_car"
-                        else:
-                            vtype = random.choice(["passenger_car", "delivery_truck", "semi_truck"])
+                            except Exception:
+                                pass
+                        self.assign_vehicle_identity(vehicle_id, vtype)
 
-                        # Assign identity
-                        identity = self.assign_vehicle_identity(vehicle_id, vtype)
-
-                        print(f"✅ {vehicle_id}: {identity.identity_type} assigned (VIN: {identity.vin})")
-
-                # Update vehicle states
+                # Update states
                 for vehicle_id in vehicle_ids:
                     state = self.get_vehicle_state(vehicle_id)
-                    if state:
+                    if state is not None:
                         self.vehicle_states[vehicle_id] = state
 
-                # Run safety applications every 1 second
-                if step % 10 == 0:
-                    for vehicle_id in list(self.vehicle_states.keys())[:5]:  # Check first 5 vehicles
-                        # FCW
-                        fcw_warning = self.forward_collision_warning(vehicle_id)
-                        if fcw_warning:
-                            print(fcw_warning)
+                # Periodic BSM broadcast: EVERY vehicle, EVERY 100ms step
+                for vehicle_id in vehicle_ids:
+                    self.broadcast(vehicle_id, sim_time, "BSM")
 
-                        # IMA
-                        ima_warning = self.intersection_movement_assist(vehicle_id)
-                        if ima_warning:
-                            print(ima_warning)
+                # Safety applications once per second, over ALL vehicles
+                if step % BSM_RATE_HZ == 0:
+                    for vehicle_id in vehicle_ids:
+                        warning = self.forward_collision_warning(
+                            vehicle_id, sim_time)
+                        if warning:
+                            print(f"  {warning}")
 
-                # Simulate emergency brake every 30 seconds
-                if step == 300:
-                    if vehicle_ids:
-                        self.emergency_electronic_brake_light(vehicle_ids[0], hard_braking=True)
+                # Recurring hard-brake events (every 15s, rotating vehicle)
+                if step > 0 and step % 150 == 0 and vehicle_ids:
+                    braking = vehicle_ids[(step // 150) % len(vehicle_ids)]
+                    self.emergency_electronic_brake_light(braking, sim_time)
 
-                # Create platoon at step 50
-                if step == 50:
-                    if len(vehicle_ids) >= 3:
-                        self.create_platoon(vehicle_ids[0], vehicle_ids[1:3])
-
-                step += 1
-                time.sleep(0.1)  # 100ms per step
-
-                # Print progress every 100 steps
-                if step % 100 == 0:
-                    elapsed = time.time() - start_time
-                    print(f"\n⏱️  Progress: {elapsed:.1f}s / {duration_seconds}s")
-                    print(f"   Active vehicles: {len(self.vehicle_states)}")
-                    print(f"   MOBI VID: {sum(1 for v in self.vehicles.values() if v.identity_type == 'MOBI_VID')}")
-                    print(f"   PKI: {sum(1 for v in self.vehicles.values() if v.identity_type == 'PKI')}")
-                    print(f"   Messages: {self.metrics.total_messages}")
-                    print(f"   Safety events: {self.metrics.safety_events_detected}")
+                if (step + 1) % 100 == 0:
+                    elapsed = time.time() - wall_start
+                    print(f"t={sim_time + STEP_LENGTH_S:5.1f}s / "
+                          f"{duration_seconds}s | sent "
+                          f"{self.metrics.messages_sent} | verified "
+                          f"{self.metrics.messages_verified} | failures "
+                          f"{self.metrics.verification_failures} | wall "
+                          f"{elapsed:.0f}s")
 
         except KeyboardInterrupt:
-            print("\n\n⏸️  Simulation interrupted by user")
-
+            print("\nSimulation interrupted by user")
         finally:
-            # Stop SUMO
             self.stop_sumo()
 
-            # Print final statistics
-            self.print_statistics()
+        self.run_attack_tests(sim_time)
+        wall_elapsed = time.time() - wall_start
+        results = self.build_results(duration_seconds, wall_elapsed)
+        self.print_statistics(results)
+        self.write_results(results)
 
-    def print_statistics(self):
-        """Print final statistics"""
+    # ------------------------------------------------------------------
+    # Results / statistics
+    # ------------------------------------------------------------------
 
-        print(f"\n{'='*80}")
-        print("📊 SIMULATION STATISTICS")
-        print(f"{'='*80}\n")
+    def build_results(self, duration_s: int, wall_elapsed_s: float) -> Dict:
+        m = self.metrics
 
-        print(f"Total Vehicles: {len(self.vehicles)}")
-        print(f"   MOBI VID: {sum(1 for v in self.vehicles.values() if v.identity_type == 'MOBI_VID')}")
-        print(f"   PKI: {sum(1 for v in self.vehicles.values() if v.identity_type == 'PKI')}")
+        def pop_block(pop: PopulationStats) -> Dict:
+            return {
+                "sign_ms": summarize(pop.sign_ms),
+                "cold_ms": summarize(pop.cold_ms),
+                "warm_ms": summarize(pop.warm_ms),
+                "messages_sent": pop.sent,
+                "messages_verified": pop.verified,
+                "verification_failures": pop.failed,
+            }
+
+        def budget_check(pop: PopulationStats) -> Dict[str, Any]:
+            cold = summarize(pop.cold_ms)
+            warm = summarize(pop.warm_ms)
+            return {
+                "cold_p95_within_100ms_budget":
+                    (cold["p95_ms"] <= V2V_BUDGET_MS) if cold else None,
+                "warm_p95_within_100ms_budget":
+                    (warm["p95_ms"] <= V2V_BUDGET_MS) if warm else None,
+                "warm_p95_within_10ms_sig_target":
+                    (warm["p95_ms"] <= SIG_CHECK_TARGET_MS) if warm else None,
+            }
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "simulate" if self.simulation_mode else "sumo",
+            "sim_duration_s": duration_s,
+            "wall_clock_s": round(wall_elapsed_s, 1),
+            "step_length_ms": int(STEP_LENGTH_S * 1000),
+            "bsm_rate_hz": BSM_RATE_HZ,
+            "neighbor_radius_m": NEIGHBOR_RADIUS_M,
+            "max_receivers_per_broadcast": MAX_NEIGHBORS,
+            "vehicles": {
+                "total": len(self.vehicles),
+                "ssi_mobi_vid": sum(1 for v in self.vehicles.values()
+                                    if v.identity_type == "MOBI_VID"),
+                "pki": sum(1 for v in self.vehicles.values()
+                           if v.identity_type == "PKI"),
+            },
+            "pki": pop_block(m.pki),
+            "ssi": pop_block(m.ssi),
+            "messages_sent": m.messages_sent,
+            "messages_delivered": m.messages_delivered,
+            "messages_verified": m.messages_verified,
+            "verification_failures": m.verification_failures,
+            "safety_events_detected": m.safety_events_detected,
+            "eebl_warnings_delivered": m.eebl_warnings_delivered,
+            "attack_tests": self.attack_results,
+            "budgets": {
+                "v2v_budget_ms": V2V_BUDGET_MS,
+                "signature_check_target_ms": SIG_CHECK_TARGET_MS,
+                "pki": budget_check(m.pki),
+                "ssi": budget_check(m.ssi),
+            },
+            "notes": {
+                "real": "ECDSA P-256 sign/verify, X.509 chain validation, "
+                        "secp256k1 EIP-191 sign/recover, W3C VC verification "
+                        "(all latencies measured with time.perf_counter)",
+                "mock": "vehicle mobility (in --simulate mode) and radio "
+                        "channel (in-process delivery; no network stack, "
+                        "no channel loss, no MAC-layer latency)",
+            },
+        }
+
+    @staticmethod
+    def _fmt(stats: Optional[Dict], key: str = "p95_ms") -> str:
+        if stats is None:
+            return "no data"
+        return (f"median {stats['median_ms']:8.3f} ms | "
+                f"p95 {stats['p95_ms']:8.3f} ms | n={stats['n']}")
+
+    def print_statistics(self, results: Dict):
+        m = self.metrics
+        print(f"\n{'=' * 80}")
+        print("MEASURED RESULTS (real cryptographic operations)")
+        print(f"{'=' * 80}\n")
+
+        v = results["vehicles"]
+        print(f"Vehicles: {v['total']} total — "
+              f"{v['ssi_mobi_vid']} SSI/MOBI_VID, {v['pki']} PKI")
+        print(f"Messages: sent {m.messages_sent}, delivered "
+              f"{m.messages_delivered}, verified {m.messages_verified}, "
+              f"failures {m.verification_failures}")
+        print(f"Safety events: {m.safety_events_detected} "
+              f"(EEBL warnings verified by {m.eebl_warnings_delivered} receivers)")
+        print(f"Wall clock: {results['wall_clock_s']}s for "
+              f"{results['sim_duration_s']}s of simulated time\n")
+
+        print("Identity-verification latency (measured):")
+        print(f"  PKI  sign            : {self._fmt(results['pki']['sign_ms'])}")
+        print(f"  PKI  verify (cold)   : {self._fmt(results['pki']['cold_ms'])}"
+              f"   [cert-chain + CRL + ECDSA verify, first contact]")
+        print(f"  PKI  verify (warm)   : {self._fmt(results['pki']['warm_ms'])}"
+              f"   [ECDSA verify, cached cert]")
+        print(f"  SSI  sign            : {self._fmt(results['ssi']['sign_ms'])}")
+        print(f"  SSI  verify (cold)   : {self._fmt(results['ssi']['cold_ms'])}"
+              f"   [full VC verification + sig recovery, first contact]")
+        print(f"  SSI  verify (warm)   : {self._fmt(results['ssi']['warm_ms'])}"
+              f"   [sig recovery vs cached peer address]")
         print()
 
-        print(f"V2V Messages:")
-        print(f"   Total Sent: {self.metrics.total_messages}")
-        print(f"   Verified: {self.metrics.messages_verified}")
-        print(f"   Failed: {self.metrics.messages_failed}")
-        print(f"   Avg Verification Time: {self.metrics.avg_verification_time_ms:.2f}ms")
-        print()
+        # Verdict — computed from MEASURED p95, never asserted on no data
+        print(f"Requirements check (budget: {V2V_BUDGET_MS:.0f}ms V2V, "
+              f"{SIG_CHECK_TARGET_MS:.0f}ms signature-check target):")
+        any_data = False
+        for label, pop in (("PKI", m.pki), ("SSI", m.ssi)):
+            cold = summarize(pop.cold_ms)
+            warm = summarize(pop.warm_ms)
+            if cold is None and warm is None:
+                print(f"  {label}: NO DATA — no verified messages; "
+                      f"requirements cannot be assessed")
+                continue
+            any_data = True
+            if cold is not None:
+                mark = "PASS" if cold["p95_ms"] <= V2V_BUDGET_MS else "FAIL"
+                print(f"  {label} cold p95 {cold['p95_ms']:.3f}ms vs "
+                      f"{V2V_BUDGET_MS:.0f}ms budget: {mark}")
+            if warm is not None:
+                mark = "PASS" if warm["p95_ms"] <= V2V_BUDGET_MS else "FAIL"
+                print(f"  {label} warm p95 {warm['p95_ms']:.3f}ms vs "
+                      f"{V2V_BUDGET_MS:.0f}ms budget: {mark}")
+                mark = ("PASS" if warm["p95_ms"] <= SIG_CHECK_TARGET_MS
+                        else "FAIL")
+                print(f"  {label} warm p95 {warm['p95_ms']:.3f}ms vs "
+                      f"{SIG_CHECK_TARGET_MS:.0f}ms sig-check target: {mark}")
+        if not any_data:
+            print("  OVERALL: NO DATA — nothing was measured; "
+                  "'requirements met' cannot be claimed")
 
-        print(f"Safety Applications:")
-        print(f"   Events Detected: {self.metrics.safety_events_detected}")
-        print(f"   Collisions Prevented: {self.metrics.collisions_prevented}")
-        print()
+        if self.attack_results:
+            all_rejected = all(self.attack_results.values())
+            print(f"\nAttack tests: "
+                  f"{'all injected bad messages rejected' if all_rejected else 'SOME BAD MESSAGES ACCEPTED — INVESTIGATE'}")
 
-        print(f"Performance:")
-        if self.metrics.verification_times:
-            print(f"   Min Verification: {min(self.metrics.verification_times):.2f}ms")
-            print(f"   Max Verification: {max(self.metrics.verification_times):.2f}ms")
-            print(f"   Avg Verification: {self.metrics.avg_verification_time_ms:.2f}ms")
-
-        # Requirements check
-        print()
-        print("✅ Requirements Met:")
-        print(f"   BSM Signing: <100ms ✅")
-        print(f"   BSM Verification: {self.metrics.avg_verification_time_ms:.2f}ms {'✅ <10ms' if self.metrics.avg_verification_time_ms < 10 else '⚠️  >10ms'}")
-        print(f"   Identity Resolution: {self.metrics.avg_verification_time_ms:.2f}ms {'✅ <50ms' if self.metrics.avg_verification_time_ms < 50 else '⚠️  >50ms'}")
+    def write_results(self, results: Dict):
+        self.results_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"\nResults written to {self.results_path}")
 
 
 def main():
-    """Main entry point"""
-    import argparse
-
-    parser = argparse.ArgumentParser(description='SUMO + MOBI VID Integration')
-    parser.add_argument('--simulate', action='store_true',
-                       help='Run in simulation mode (no SUMO required)')
-    parser.add_argument('--gui', action='store_true',
-                       help='Use SUMO GUI (if SUMO available)')
-    parser.add_argument('--duration', type=int, default=60,
-                       help='Simulation duration in seconds (default: 60)')
-
+    parser = argparse.ArgumentParser(
+        description="SUMO + vehicle identity integration with real "
+                    "cryptographic V2V verification")
+    parser.add_argument("--simulate", action="store_true",
+                        help="Run with mock mobility (no SUMO required); "
+                             "crypto is still real")
+    parser.add_argument("--gui", action="store_true",
+                        help="Use SUMO GUI (if SUMO available)")
+    parser.add_argument("--duration", type=int, default=60,
+                        help="Simulated duration in seconds (default: 60)")
+    parser.add_argument("--vehicles", type=int, default=50,
+                        help="Vehicle count in --simulate mode (default: 50)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for mock mobility (default: 42)")
     args = parser.parse_args()
 
-    # Create integration
     integration = SUMOIdentityIntegration(
         simulation_mode=args.simulate,
-        use_gui=args.gui
+        use_gui=args.gui,
+        num_vehicles=args.vehicles,
+        seed=args.seed,
     )
-
-    # Run simulation
     integration.run_simulation(duration_seconds=args.duration)
 
 
