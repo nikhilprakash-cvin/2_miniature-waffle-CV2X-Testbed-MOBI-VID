@@ -191,13 +191,70 @@ with H2.
 
 ## 5.6 RQ2 / Thrust 5 — Security Analysis
 
-**Provenance**: `4_comparison-framework/security-analysis/results/security_matrix.json`
-(executable attack scenarios).
+**Provenance**: two complementary executable suites (see
+`4_comparison-framework/security-analysis/README.md` for how they relate):
+1. **Authorization/replay test suite** —
+   `1_blockchain-identity/test/security/securityScenarios.test.js`,
+   54 Mocha scenarios run under `npx hardhat test`. Each fires an
+   adversarial transaction against the real contract and asserts it
+   reverts (with a differential control that the authorized operation
+   succeeds). Result: **43/43 applicable attack cells DEFENDED**, no
+   vulnerabilities — and the suite stays green *because* the contracts
+   defend, so a regression would fail CI as a real finding.
+2. **Threat-matrix analysis** —
+   `security-analysis/results/security_matrix.json`, which extends beyond
+   pass/fail defense to the dimensions a revert-test cannot express:
+   Sybil economics, recovery availability, and on-chain PII leakage.
 
-> _[PENDING — populated from the security-analysis suite. Covers:
-> impersonation/forgery, replay, identity-theft/transfer semantics, Sybil
-> cost, key-compromise recovery, on-chain PII leakage — per standard,
-> defended/vulnerable/partial from executed outcomes.]_
+Security profile per standard (analysis lens; ✓ defended, ◐ partial,
+✗ vulnerable, * = reasoned from source, not executed):
+
+| Standard | Impersonation | Replay | Identity theft | Sybil cost | Recovery | Privacy |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| ERC-1056 | ✓ | ✓ | ◐ | ✗ | ✗* | ✓ |
+| ERC-721 | ✓ | n/a* | ✗ | ✓ | ✗* | ✗ |
+| ERC-725 | ✓ | n/a* | ◐ | ◐ | ✗* | ✓ |
+| ERC-735 | ✓ | ◐ | ◐ | ◐ | ✗* | ✗ |
+| ERC-1155 | ✓ | n/a* | **✓** (soulbound) | ✓ | ◐ | ✗ |
+| ERC-4337 | ✓ | ✓ | ◐ | ◐ | **✓** (guardian) | ◐ |
+| LSP8 | ✓ | n/a* | ✗ | ✓ | ◐ | ✗ |
+| MOBI-VID-V2 | ✓ | ◐* | ◐ | ✓ | ✗* | **✓** (hashed VIN) |
+| CVIN-Combined | ✓ | ◐ | ◐ | ✗ | ✗* | ◐ |
+| W3C VC/VP (off-chain) | ✓ | ✓ | ✓ | ◐ | ◐ | ✓ |
+
+**Findings (RQ2 / H5):**
+
+1. **No standard dominates — the security/performance trade-off is real
+   (supports H5).** The cheapest identity standards (ERC-1056,
+   CVIN-Combined) are the *most* Sybil-vulnerable (no issuer gating,
+   ~52k-gas identities); the issuer-gated standards (MOBI VID, ERC-1155,
+   LSP8) resist Sybil but cost more per identity. Standards occupy
+   distinct points on the frontier rather than one being universally best.
+
+2. **Recovery is the sharpest differentiator.** Only **ERC-4337** offers
+   genuine on-chain key recovery (guardian `recoverOwner`, executed and
+   verified — the identity address survives an owner-key compromise).
+   ERC-1155 and LSP8 offer issuer-mediated re-binding; the remaining six
+   have no recovery — a compromised key is permanent identity loss.
+
+3. **Identity theft follows the transfer model.** ERC-721 and LSP8 are
+   `✗` — a transferred/stolen token moves the whole identity (VIN
+   follows the token, demonstrated on-chain). **ERC-1155 is uniquely `✓`
+   via a soulbound `_update` override** (holder-initiated transfer of the
+   birth credential reverts). Registry standards are `◐` — theft requires
+   the current owner key, not merely a signature.
+
+4. **Plaintext-VIN leakage is the norm; MOBI VID is the exception.**
+   Read-back proved a plaintext VIN on-chain for ERC-721, ERC-735,
+   ERC-1155, and LSP8. **MOBI VID V2 stores only a salted hash +
+   ciphertext** and resolves identity via `did:ethr` (not the
+   VIN-embedding `did:mobi:<VIN>` method, which the resolver defines but
+   the on-chain layer correctly avoids — flagged as a privacy footgun).
+
+5. **Source-level finding (new):** MOBI VID's `attestEvent` stores an
+   attestation signature that is **never verified on-chain** (no
+   `ecrecover`), gated only by attester role — a replay/forgery gap
+   recorded for the security chapter and the future-work list.
 
 ---
 

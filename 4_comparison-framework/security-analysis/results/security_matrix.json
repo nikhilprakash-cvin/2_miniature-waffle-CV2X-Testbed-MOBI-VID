@@ -1,0 +1,454 @@
+{
+  "metadata": {
+    "title": "CVIN Thrust 5 \u2014 V2X security-comparison matrix (executed attack suite)",
+    "generated": "2026-07-14T02:43:35Z",
+    "categories": [
+      "impersonation",
+      "replay",
+      "identity_theft",
+      "sybil",
+      "recovery",
+      "privacy"
+    ],
+    "category_labels": {
+      "impersonation": "Impersonation / Forgery",
+      "replay": "Replay",
+      "identity_theft": "Identity Theft / Transfer",
+      "sybil": "Sybil Resistance",
+      "recovery": "Key Compromise / Recovery",
+      "privacy": "Privacy / PII Leakage"
+    },
+    "outcome_legend": {
+      "DEFENDED": "attack blocked by a demonstrated mechanism",
+      "PARTIAL": "partially mitigated / conditional / app-dependent",
+      "VULNERABLE": "attack succeeded or no mitigation exists",
+      "N/A": "category does not apply to this standard's attack surface"
+    },
+    "method_legend": {
+      "executed": "a real transaction / verification was run and its outcome observed",
+      "reasoned": "structural absence argued from verified contract/library source (not a sent tx)"
+    },
+    "layers": {
+      "on-chain": {
+        "layer": "on-chain",
+        "solcVersion": "0.8.24",
+        "ozVersion": "5.0.2",
+        "network": "hardhat-local",
+        "chainId": 31337,
+        "date": "2026-07-14T02:43:35.009Z",
+        "categories": [
+          "impersonation",
+          "replay",
+          "identity_theft",
+          "sybil",
+          "recovery",
+          "privacy"
+        ],
+        "note": "Every cell outcome is derived from a REAL on-chain outcome: reverts were captured (reason recorded) and state was read back. method='executed' means the malicious tx was actually sent and its outcome observed; method='reasoned' means the property is a structural absence (e.g. no recovery function) argued from the verified contract source, not a sent transaction."
+      },
+      "off-chain": "W3C VC/VP (SSI) layer in 2_w3c-ssi-layer/verifiable-credentials \u2014 real secp256k1 signatures + verifier verdicts"
+    },
+    "sybil_cost_proxy": "createIdentity gasUsed from 4_comparison-framework/results/gas_benchmark.json (cheaper creation => cheaper Sybil)"
+  },
+  "threat_model": {
+    "impersonation": "Forge a credential or spoof an identity. On-chain: create/mint/setAttribute/addClaim as a non-owner or with a forged issuer/UserOp signature must revert. Off-chain: a VC signed by the wrong key must fail verification.",
+    "replay": "Replay a valid VP with a stale challenge (must fail); replay a signed on-chain meta-tx / UserOperation where a nonce should prevent reuse.",
+    "identity_theft": "Transfer/theft semantics: can the identity be seized/moved by whoever compromises the key? Token-transferable (ERC-721/LSP8) vs owner-authorised call (ERC-1056/725/735/4337/combined/MOBI) vs issuer-gated soulbound (ERC-1155).",
+    "sybil": "Cost + gating to create N identities. Cheap/permissionless creation lowers the Sybil bar; issuer-gating (MOBI onlyAuthorizedManufacturer, ERC-1155 ISSUER_ROLE, ERC-721 MANUFACTURER_ROLE, LSP8 authority) raises it.",
+    "recovery": "Recovery after key compromise/loss. ERC-4337 guardian social recovery and ERC-1155/LSP8 issuer/authority re-binding are demonstrated; standards with no primitive are asserted as permanent-loss.",
+    "privacy": "PII / on-chain data leakage: does the VIN appear in plaintext in storage or events for a birth/registration op? did:mobi:<VIN> would leak the VIN in the DID itself \u2014 the canonical stack uses did:ethr instead."
+  },
+  "standards": {
+    "ERC-1056": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyOwner(identity, msg.sender): every state-changer requires actor == identityOwner(identity)",
+        "evidence": "attacker setAttribute reverted: \"VM Exception while processing transaction: reverted with reason string 'DIDRegistry: unauthorized'\"; attacker changeOwner reverted: \"VM Exception while processing transaction: reverted with reason string 'DIDRegistry: unauthorized'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "DEFENDED",
+        "mechanism": "per-identity incrementing nonce in the signed-hash preimage; second submission recomputes with nonce+1 -> ecrecover != owner",
+        "evidence": "first setAttributeSigned ok=true; identical replay reverted: \"VM Exception while processing transaction: reverted with reason string 'DIDRegistry: invalid signature'\". CAVEAT: signed hash binds contract address but NOT block.chainid -> cross-chain replay is possible (documented limitation of ERC-1056).",
+        "method": "executed"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "address-bound identifier; controller transferable only via owner-authorised changeOwner. No token/approval transfer surface.",
+        "evidence": "changeOwner by owner ok=true; identityOwner now 0x90F79bf6EB2c4f870365E785982E1f101E93b906 (== newOwner 0x90F79bf6EB2c4f870365E785982E1f101E93b906); attacker changeOwner already shown to revert. Identifier (the address) never changes; a stolen owner key can still seize control.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no issuer gating; every Ethereum address is already a DID (zero-cost implicit creation)",
+        "evidence": "attacker created 5/5 independent DIDs unchallenged. Identity creation is permissionless and effectively free. createIdentity gas (Sybil-cost proxy) = 52,612.",
+        "method": "executed",
+        "cost_proxy_gas": 52612
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no recovery primitive; changeOwner requires the CURRENT owner key, so a lost/compromised key cannot be recovered",
+        "evidence": "contract exposes no guardian/social-recovery function; compromised key = permanent loss of control.",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "DEFENDED",
+        "mechanism": "identifier is the Ethereum address; attributes are pubkeys/endpoints emitted as events; no VIN/PII field",
+        "evidence": "contract has no VIN storage or getter; createIdentity emits only a Secp256k1 verification key. DID form is did:ethr:<chainId>:<address>.",
+        "method": "executed"
+      }
+    },
+    "ERC-721": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyRole(MANUFACTURER_ROLE) on mintVehicle (OpenZeppelin AccessControl)",
+        "evidence": "attacker mint reverted: \"VM Exception while processing transaction: reverted with custom error 'AccessControlUnauthorizedAccount(\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\", \"0xeefb95e842a3287179d933b4460be539a1d5af11aa8b325bb45c5c8dc92de4ed\")'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "N/A",
+        "mechanism": "no contract-level signed meta-transaction; all ops are direct calls protected by the Ethereum tx nonce",
+        "evidence": "ERC-721 identity ops (mint/transfer) carry no in-contract signature to replay.",
+        "method": "reasoned"
+      },
+      "identity_theft": {
+        "outcome": "VULNERABLE",
+        "mechanism": "identity == transferable NFT; transferFrom / approved-operator moves the whole identity (VIN + history follow the token)",
+        "evidence": "transfer moved ownerOf to 0x90F79bf6EB2c4f870365E785982E1f101E93b906 while VIN stayed \"1HGBH41JXMN109186\"; approved operator then moved it again ok=true. A stolen key OR an approval grants full identity takeover; no owner-authorised gate beyond token control.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "DEFENDED",
+        "mechanism": "identity minting gated by MANUFACTURER_ROLE; unprivileged attacker cannot create identities",
+        "evidence": "attacker self-mint reverted: \"VM Exception while processing transaction: reverted with custom error 'AccessControlUnauthorizedAccount(\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\", \"0xeefb95e842a3287179d933b4460be539a1d5af11aa8b325bb45c5c8dc92de4ed\")'\". Sybil cost = manufacturer authorisation, not just gas. createIdentity gas (Sybil-cost proxy) = 542,429.",
+        "method": "executed",
+        "cost_proxy_gas": 542429
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no key-recovery primitive; deactivateVehicle (admin) only flags metadata inactive and cannot reassign token ownership",
+        "evidence": "a lost/stolen owner key cannot be recovered; the token (identity) stays with whoever holds it.",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no VIN hashing; plaintext VIN stored in tokenIdToVIN / vinToTokenId / vehicleMetadata and emitted in VehicleMinted",
+        "evidence": "tokenIdToVIN(1) read back plaintext VIN \"1HGBH41JXMN109186\"; vehicleMetadata.vin = \"1HGBH41JXMN109186\". Full PII (make/model/year/color) also public.",
+        "method": "executed"
+      }
+    },
+    "ERC-725": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "require(msg.sender == _owner) on addKey / removeKey / transferOwnership / execute",
+        "evidence": "attacker addKey reverted: \"Transaction reverted and Hardhat couldn't infer the reason.\"; attacker transferOwnership reverted: \"Transaction reverted and Hardhat couldn't infer the reason.\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "N/A",
+        "mechanism": "no signed meta-transaction surface; direct owner calls only (Ethereum tx nonce)",
+        "evidence": "no in-contract signature to replay.",
+        "method": "reasoned"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "identity = a per-vehicle proxy-account contract; ownership transferable only via owner-authorised transferOwnership (no approval/operator surface)",
+        "evidence": "transferOwnership by owner ok=true; owner() now 0x90F79bf6EB2c4f870365E785982E1f101E93b906. A stolen owner key can seize the contract; transferOwnership has no zero-address guard (bricking risk).",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "PARTIAL",
+        "mechanism": "permissionless per-identity contract deployment; the only Sybil barrier is deployment gas (~529k each)",
+        "evidence": "attacker deployed 3/3 independent identity contracts with no authorisation. Cost-gated only, not issuer-gated. createIdentity gas (Sybil-cost proxy) = 528,647.",
+        "method": "executed",
+        "cost_proxy_gas": 528647
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no recovery primitive (no guardian, no admin reassignment)",
+        "evidence": "compromised owner key = permanent loss; renounceOwnership can even brick the identity.",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "DEFENDED",
+        "mechanism": "no VIN/PII on-chain; only key identifiers (keccak256 hashes) are stored/emitted",
+        "evidence": "contract stores Key{purpose,keyType,key} entries only; DID form is did:key:<chainId>:<proxyAddress>, no VIN.",
+        "method": "executed"
+      }
+    },
+    "ERC-735": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "addClaim onlyOwner + on-chain ecrecover: recovered signer must equal declared issuer (EIP-191, EIP-2 malleability guard)",
+        "evidence": "non-owner addClaim reverted: \"VM Exception while processing transaction: reverted with reason string 'ERC735: caller is not the owner'\"; forged-issuer-signature addClaim reverted: \"VM Exception while processing transaction: reverted with reason string 'ERC735: invalid issuer signature'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "PARTIAL",
+        "mechanism": "issuer signature binds address(this)+topic+data (blocks cross-identity replay) but has NO nonce/expiry/chainid; same-identity re-anchor is accepted (idempotent overwrite -> ClaimChanged)",
+        "evidence": "valid anchor ok=true; identical re-submission also ok=true (idempotent, keyed by (issuer,topic)). No replay protection primitive; harmless here only because re-adding overwrites in place. Signature is not chain-bound.",
+        "method": "executed"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "identity = per-vehicle claim-holder contract; transferOwnership is onlyOwner (no approval/operator surface)",
+        "evidence": "transferOwnership by owner ok=true. Stolen owner key can seize; no passive transfer surface.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "PARTIAL",
+        "mechanism": "permissionless per-identity contract deployment; Sybil barrier is deployment gas only (~1.40M each \u2014 the most expensive to spam)",
+        "evidence": "attacker deployed 3/3 claim-holder identities unchallenged. Cost-gated only; claims themselves still need a trusted issuer signature. createIdentity gas (Sybil-cost proxy) = 1,404,108.",
+        "method": "executed",
+        "cost_proxy_gas": 1404108
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no recovery primitive (owner is the sole MANAGEMENT key)",
+        "evidence": "compromised owner key = permanent loss of the identity contract.",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "VULNERABLE",
+        "mechanism": "constructor stores VIN as `string public vin` and emits VehicleIdentityCreated(vinHash, vin, owner) with plaintext VIN",
+        "evidence": "holder.vin() read back plaintext \"1HGBH41JXMN109186\" (vinHash is also stored, but plaintext is exposed alongside it).",
+        "method": "executed"
+      }
+    },
+    "ERC-1155": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyRole(ISSUER_ROLE) on registerVehicle / issueCredential / revokeCredential",
+        "evidence": "attacker registerVehicle reverted: \"VM Exception while processing transaction: reverted with custom error 'AccessControlUnauthorizedAccount(\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\", \"0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122\")'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "N/A",
+        "mechanism": "no signed meta-transaction surface; issuer-gated direct calls (Ethereum tx nonce)",
+        "evidence": "no in-contract signature to replay.",
+        "method": "reasoned"
+      },
+      "identity_theft": {
+        "outcome": "DEFENDED",
+        "mechanism": "soulbound: _update blocks transfers between non-zero addresses unless msg.sender holds ISSUER_ROLE",
+        "evidence": "holder safeTransferFrom of BIRTH_CERT reverted: \"VM Exception while processing transaction: reverted with reason string 'CVIN1155: credentials are soulbound (issuer-mediated transfer only)'\". A stolen vehicle key cannot move the identity token; only an issuer can re-bind it.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "DEFENDED",
+        "mechanism": "identity registration gated by ISSUER_ROLE",
+        "evidence": "attacker self-register reverted: \"VM Exception while processing transaction: reverted with custom error 'AccessControlUnauthorizedAccount(\"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC\", \"0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122\")'\". Sybil cost = issuer authorisation. createIdentity gas (Sybil-cost proxy) = 103,905.",
+        "method": "executed",
+        "cost_proxy_gas": 103905
+      },
+      "recovery": {
+        "outcome": "PARTIAL",
+        "mechanism": "issuer-mediated recovery: ISSUER_ROLE can issuerTransferCredential the BIRTH_CERT to a new vehicle address (re-binds VIN)",
+        "evidence": "issuer re-bound identity to 0x90F79bf6EB2c4f870365E785982E1f101E93b906; balanceOf(new, BIRTH_CERT)=1. Recovery depends on a trusted issuer, not the key holder.",
+        "method": "executed"
+      },
+      "privacy": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no VIN hashing for storage; plaintext VIN in `vehicleVIN` mapping and VehicleRegistered(vehicle, vinHash, vin) event",
+        "evidence": "vehicleVIN() read back plaintext \"1HGBH41JXMN109186\" (a keccak vinHash index also exists, but plaintext is stored+emitted).",
+        "method": "executed"
+      }
+    },
+    "ERC-4337": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyOwnerOrEntryPoint on direct calls; validateUserOp ecrecover requires recovered == owner (EntryPoint reverts on validationData != 0)",
+        "evidence": "direct attacker setAttribute reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINVehicleAccount: not owner or entryPoint'\"; attacker-signed UserOp reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINEntryPoint: signature validation failed'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "DEFENDED",
+        "mechanism": "EntryPoint enforces require(userOp.nonce == nonces[sender]) and bumps it; userOpHash also binds entryPoint address + block.chainid",
+        "evidence": "first handleOp ok=true; identical replay reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINEntryPoint: invalid nonce'\". Best replay posture (nonce + chainid-bound hash).",
+        "method": "executed"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "identity = stable account address; only the owner signing key rotates via owner-authorised transferOwnership (no token/approval surface)",
+        "evidence": "transferOwnership (key rotation) ok=true; account address (identity) unchanged. A stolen owner key can rotate itself out, but guardian recovery (below) can restore control.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "PARTIAL",
+        "mechanism": "permissionless smart-account deployment; Sybil barrier is deployment gas only (~768k each)",
+        "evidence": "attacker deployed 3/3 accounts unchallenged. Cost-gated only, not issuer-gated. createIdentity gas (Sybil-cost proxy) = 768,204.",
+        "method": "executed",
+        "cost_proxy_gas": 768204
+      },
+      "recovery": {
+        "outcome": "DEFENDED",
+        "mechanism": "guardian social recovery: recoverOwner(newOwner) callable only by the designated guardian installs a fresh signing key without changing the identity address",
+        "evidence": "non-guardian recoverOwner reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINVehicleAccount: not guardian'\"; guardian recoverOwner ok=true; owner() now 0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65 (== recovered 0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65). CAVEAT: single-guardian, instant, no timelock/threshold -> a compromised guardian is itself a takeover vector.",
+        "method": "executed"
+      },
+      "privacy": {
+        "outcome": "PARTIAL",
+        "mechanism": "ERC-725Y-style attribute store is public and does NOT hash values; app-dependent (no forced VIN field, but any VIN written is exposed via getAttribute + AttributeChanged event)",
+        "evidence": "setAttribute(vin) then getAttribute read back plaintext \"1HGBH41JXMN109186\". No built-in VIN protection; privacy depends on the application encrypting before storing.",
+        "method": "executed"
+      }
+    },
+    "LSP8": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyOwner (issuing authority) on mintVehicle / setDataForTokenId",
+        "evidence": "attacker mintVehicle reverted: \"VM Exception while processing transaction: reverted with reason string 'LSP8: caller is not the contract owner'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "N/A",
+        "mechanism": "no signed meta-transaction surface; direct calls (Ethereum tx nonce)",
+        "evidence": "no in-contract signature to replay.",
+        "method": "reasoned"
+      },
+      "identity_theft": {
+        "outcome": "VULNERABLE",
+        "mechanism": "identity == transferable token; the token owner can move the whole identity via transfer (VIN data follows the tokenId)",
+        "evidence": "token owner transfer ok=true, tokenOwnerOf now 0x90F79bf6EB2c4f870365E785982E1f101E93b906; non-owner transfer reverted: \"VM Exception while processing transaction: reverted with reason string 'LSP8: caller is not the token owner'\". A stolen token-owner key = stolen identity (no operator surface, so slightly narrower than ERC-721, but still freely transferable by the holder).",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "DEFENDED",
+        "mechanism": "identity minting gated by the issuing authority (onlyOwner)",
+        "evidence": "attacker self-mint reverted: \"VM Exception while processing transaction: reverted with reason string 'LSP8: caller is not the contract owner'\". Sybil cost = authority authorisation. createIdentity gas (Sybil-cost proxy) = 149,352.",
+        "method": "executed",
+        "cost_proxy_gas": 149352
+      },
+      "recovery": {
+        "outcome": "PARTIAL",
+        "mechanism": "authority-mediated recovery: the issuing authority can revokeVehicle then re-mint the same tokenId (keccak256(VIN)) to a new owner",
+        "evidence": "authority revoked + re-minted identity to a new owner ok=true. Recovery depends on a trusted authority, not the key holder.",
+        "method": "executed"
+      },
+      "privacy": {
+        "outcome": "VULNERABLE",
+        "mechanism": "tokenId = keccak256(VIN) is hashed, but the plaintext VIN is also stored under DATA_KEY_VIN and emitted in TokenIdDataChanged / VehicleMinted",
+        "evidence": "getDataForTokenId(DATA_KEY_VIN) read back plaintext \"1HGBH41JXMN109186\".",
+        "method": "executed"
+      }
+    },
+    "MOBI-VID-V2": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyAuthorizedManufacturer on registerVehicleBirth; recordLifecycleEvent gated by onlyAuthorizedIssuer(eventType) role matrix",
+        "evidence": "attacker registerVehicleBirth reverted: \"VM Exception while processing transaction: reverted with reason string 'Only authorized manufacturers can register vehicles'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "PARTIAL",
+        "mechanism": "no signed meta-tx on the identity path (role-gated direct calls); attestEvent stores a signature blob that is NEVER verified on-chain (no ecrecover) \u2014 a replay/forgery gap for attestations",
+        "evidence": "birth/ownership ops carry no replayable in-contract signature; attestEvent signatures are unvalidated and could be replayed/forged (only gated by attester role).",
+        "method": "reasoned"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "owner-authorised transferVehicleOwnership (onlyOwner(identity, actor)); immutable birth certificate + full ownership history preserve provenance across transfers",
+        "evidence": "transferVehicleOwnership by owner ok=true; identityOwner now 0x90F79bf6EB2c4f870365E785982E1f101E93b906. A stolen owner key can transfer, but the birth cert and odometer-stamped ownership chain remain tamper-evident.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "DEFENDED",
+        "mechanism": "identity creation gated by onlyAuthorizedManufacturer AND VIN-hash uniqueness; highest per-identity cost (~299k gas)",
+        "evidence": "attacker registerVehicleBirth reverted: \"VM Exception while processing transaction: reverted with reason string 'Only authorized manufacturers can register vehicles'\". Strongest Sybil resistance: manufacturer authorisation + unique-VIN enforcement. createIdentity gas (Sybil-cost proxy) = 298,923.",
+        "method": "executed",
+        "cost_proxy_gas": 298923
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "inherits ERC-1056 changeOwner (requires current owner key); no guardian/social recovery",
+        "evidence": "a compromised owner key cannot be recovered by the vehicle; registryAuthority can re-authorize manufacturers but cannot restore a lost owner key.",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "DEFENDED",
+        "mechanism": "VIN stored ONLY as bytes32 vinHash + off-chain-encrypted `encryptedVIN`; VehicleBirthRegistered event emits the hash, not the VIN; DID is did:ethr:<chainId>:<address>",
+        "evidence": "vehicleBirths.vinHash = 0x4033859e568c05f5545f080dd3e2646cc5056351fc2fe2dccdd0bad65ddb203d (hash); encryptedVIN = \"encrypted:AES256:VINCIPHERTEXT==\" (ciphertext, not the VIN); getVehicleDID() = \"did:ethr:0x7a69:15d34aaf54267db7d7c367839aaf71a00a2c6a65\" (no VIN in the DID). Only family that avoids plaintext VIN on-chain.",
+        "method": "executed"
+      }
+    },
+    "CVIN-Combined": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "onlyIdentityOwner on ERC-1056 side; addClaim ecrecover requires recovered raw-digest signer == declared issuer",
+        "evidence": "attacker setAttribute reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINCombined: unauthorized'\"; forged-issuer claim reverted: \"VM Exception while processing transaction: reverted with reason string 'CVINCombined: invalid claim signature'\"",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "PARTIAL",
+        "mechanism": "claim signature binds address(this)+identity+topic+data (blocks cross-context replay) but has NO nonce/expiry/chainid and NO EIP-2 malleability guard; same-context re-anchor accepted (idempotent)",
+        "evidence": "valid anchor ok=true; identical re-submission also ok=true. No replay primitive; changeOwner path is a direct owner call (no signature to replay).",
+        "method": "executed"
+      },
+      "identity_theft": {
+        "outcome": "PARTIAL",
+        "mechanism": "address-bound identifier; controller transfer only via owner-authorised changeOwner (no token/approval surface)",
+        "evidence": "changeOwner by owner ok=true; identityOwner now 0x90F79bf6EB2c4f870365E785982E1f101E93b906. Stolen owner key can seize; no passive transfer surface.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "VULNERABLE",
+        "mechanism": "ERC-1056 side: every address is an implicit identity; no issuer gating; near-zero creation cost (~52k first attribute write)",
+        "evidence": "attacker created 5/5 independent identities unchallenged. Safety-critical CLAIMS still need a trusted issuer signature, but base identities are free/permissionless. createIdentity gas (Sybil-cost proxy) = 52,178.",
+        "method": "executed",
+        "cost_proxy_gas": 52178
+      },
+      "recovery": {
+        "outcome": "VULNERABLE",
+        "mechanism": "no recovery primitive; changeOwner requires the current owner key",
+        "evidence": "compromised owner key = permanent loss (the hybrid adds on-chain claims but no key recovery).",
+        "method": "reasoned"
+      },
+      "privacy": {
+        "outcome": "PARTIAL",
+        "mechanism": "ERC-1056 attributes are event-only (no storage); but ERC-735 claim `data` is stored and readable via getClaim \u2014 unhashed, app-dependent",
+        "evidence": "getClaim(...).data read back plaintext \"1HGBH41JXMN109186\" (the benchmark/app placed the VIN in claim data). No forced hashing; privacy depends on the app hashing/encrypting claim payloads.",
+        "method": "executed"
+      }
+    }
+  },
+  "offchain_ssi": {
+    "W3C-VC/VP": {
+      "impersonation": {
+        "outcome": "DEFENDED",
+        "mechanism": "issuer signature recovered via secp256k1 and matched against the address embedded in the issuer DID (or a trusted-issuer registry)",
+        "evidence": "baseline genuine VC verified=True; forged-issuer VC rejected (errors: ['[signature] recovered signer 0xdb38024500f16442f50c13fe5d9072ea74ae7f17 does not match issuer did:ethr:0x1:0xdddddddddddddddddddddddddddddddddddddddd']); tampered-claim VC rejected (errors: ['[signature] recovered signer 0xaacef5ae70fa94e64a601fd179d4161388887f83 does not match issuer did:ethr:0x1:0xC866F83107cd98a7164eE39B082C831e17996E83']).",
+        "method": "executed"
+      },
+      "replay": {
+        "outcome": "DEFENDED",
+        "mechanism": "VP proof binds a verifier-supplied challenge (nonce) + domain; verifier rejects any challenge mismatch",
+        "evidence": "fresh presentation accepted=True; same VP replayed with a stale challenge rejected (errors: ['[vp_challenge] challenge mismatch (possible replay)']).",
+        "method": "executed"
+      },
+      "identity_theft": {
+        "outcome": "DEFENDED",
+        "mechanism": "holder binding: the VP must be signed by the key controlling the holder DID; a stolen credential is unusable without the holder key",
+        "evidence": "thief (same holder DID, wrong key) presentation rejected (errors: ['[vp_signature] presentation signed by 0x0f465fffe80f2bf923db25acef37468a21f35f02, not holder did:ethr:0x1:0xD80a5bda1CEe77c803e15d4306F180ddd7A72DAB']). A copied/stolen credential cannot be replayed by a third party.",
+        "method": "executed"
+      },
+      "sybil": {
+        "outcome": "PARTIAL",
+        "mechanism": "credentials from a self-asserted (non-address-bearing) issuer DID are rejected unless the issuer is in the trusted-issuer registry; the DID namespace itself is unpermissioned",
+        "evidence": "credential from an unknown did:mobi issuer rejected=True (errors: [\"[signature] cannot determine signing address for issuer 'did:mobi:manufacturer:rogue' (not address-bearing, not in trusted registry)\"]). Trust is gated at the issuer-registry, not at DID creation, so pseudonymous holder identities remain cheap (governance-level, not cryptographic, Sybil control).",
+        "method": "executed"
+      },
+      "recovery": {
+        "outcome": "PARTIAL",
+        "mechanism": "no key recovery at the VC layer, but issuer revocation lets a compromised credential be invalidated (credentialStatus) pending re-issuance to a new key",
+        "evidence": "credential valid before revoke=True, after revoke=False. Key recovery itself is delegated to the on-chain identity layer (only ERC-4337 offers on-chain guardian recovery).",
+        "method": "executed"
+      },
+      "privacy": {
+        "outcome": "DEFENDED",
+        "mechanism": "SD-JWT-style salted claim digests: only disclosed (claim,salt) pairs travel; identities use did:ethr (address-based), avoiding the did:mobi:<VIN> anti-pattern that would embed the VIN in the DID",
+        "evidence": "presented only ['odometerKm', 'vin']; sensitive 'cost'/'technicianId' stayed hidden=True; holder DID is did:ethr=True. NOTE: the did_resolver DOES define a did:mobi:<VIN> method that would leak the VIN in the DID string \u2014 flagged as an anti-pattern the canonical stack avoids by using did:ethr.",
+        "method": "executed"
+      }
+    }
+  }
+}

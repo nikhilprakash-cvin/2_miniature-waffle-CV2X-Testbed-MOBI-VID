@@ -1,0 +1,14 @@
+standard,Unauthorized issuance,Unauthorized attribute write,Unauthorized delegate/claim,Unauthorized revocation,Identity hijack,Signature replay,Defended (of applicable)
+ERC-1056,—,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,5/5
+ERC-721,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,—,5/5
+ERC-725,—,DEFENDED,DEFENDED,DEFENDED,DEFENDED,—,4/4
+ERC-735,—,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,5/5
+ERC-1155,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,—,5/5
+ERC-4337,—,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,5/5
+LSP8,DEFENDED,DEFENDED,—,DEFENDED,DEFENDED,—,4/4
+MOBI-VID-V2,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,—,5/5
+CVIN-Combined,—,DEFENDED,DEFENDED,DEFENDED,DEFENDED,DEFENDED,5/5
+TOTAL defended/applicable,4/4,9/9,8/8,9/9,9/9,4/4,43/43
+
+Legend,DEFENDED = malicious tx reverted,VULNERABLE = malicious tx mined,— = attack N/A to this standard's model
+Conditions,"solc 0.8.24 (optimizer on, 200 runs, viaIR)",OpenZeppelin 5.0.2,network hardhat-local,measured 2026-07-14T02:45:34.621Z
