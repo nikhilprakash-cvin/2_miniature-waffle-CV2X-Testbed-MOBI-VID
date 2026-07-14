@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 cv2x-testbed/demo_output/
 cv2x-testbed/scripts/comparison_results.json
+
+# Security-analysis generated matrices are reproducible; keep committed copies
+# (thesis artifacts). Transient node_modules etc. already ignored above.
