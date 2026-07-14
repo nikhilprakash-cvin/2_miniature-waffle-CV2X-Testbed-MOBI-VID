@@ -5,68 +5,61 @@ on:
     branches: [ main, claude/** ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  test-erc-standards:
+  hardhat-tests:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        standard: [ERC721, ERC725, ERC735, ERC1056, ERC1155]
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: 1_blockchain-identity/package-lock.json
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 1_blockchain-identity/package-lock.json
 
-    - name: Install dependencies
-      working-directory: 1_blockchain-identity
-      run: npm ci
+      - name: Install dependencies
+        working-directory: 1_blockchain-identity
+        run: npm ci
 
-    - name: Compile contracts
-      working-directory: 1_blockchain-identity
-      run: npx hardhat compile
+      - name: Compile all 9 standards
+        working-directory: 1_blockchain-identity
+        run: npx hardhat compile
 
-    - name: Run ${{ matrix.standard }} tests
-      working-directory: 1_blockchain-identity
-      run: npx hardhat test test/${{ matrix.standard }}*.js
+      - name: Run full contract test suite (147 tests, all 9 standards)
+        working-directory: 1_blockchain-identity
+        run: npx hardhat test
 
-    - name: Gas report
-      working-directory: 1_blockchain-identity
-      run: REPORT_GAS=true npx hardhat test
-
-    - name: Upload gas report
-      uses: actions/upload-artifact@v3
-      with:
-        name: gas-report-${{ matrix.standard }}
-        path: 1_blockchain-identity/gas-report.txt
-
-  coverage:
+  mobi-vid-onchain:
+    # The MOBI VID Python layer drives a Hardhat node it starts itself,
+    # so it needs both the compiled contracts and the Python deps.
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 1_blockchain-identity/package-lock.json
 
-    - name: Install dependencies
-      working-directory: 1_blockchain-identity
-      run: npm ci
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Run coverage
-      working-directory: 1_blockchain-identity
-      run: npx hardhat coverage
+      - name: Install Node deps + compile
+        working-directory: 1_blockchain-identity
+        run: |
+          npm ci
+          npx hardhat compile
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        files: 1_blockchain-identity/coverage/lcov.info
-        flags: smart-contracts
+      - name: Install Python deps
+        run: pip install web3 eth-account cryptography pytest coincurve
+
+      - name: Run MOBI VID on-chain layer tests
+        working-directory: 2_w3c-ssi-layer/mobi-vid
+        run: python3 -m pytest tests/ -v

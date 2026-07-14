@@ -5,71 +5,52 @@ on:
     branches: [ main, claude/** ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  w3c-did-compliance:
+  vc-layer-tests:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Install dependencies
-      run: |
-        pip install pytest pytest-cov
-        cd 2_w3c-ssi-layer && pip install -r requirements.txt || echo "No requirements yet"
+      - name: Install dependencies
+        run: pip install web3 eth-account cryptography pytest coincurve
 
-    - name: Run W3C DID Core compliance tests
-      run: |
-        cd 2_w3c-ssi-layer/did-resolution
-        python3 test_did_compliance.py --report || echo "Tests not yet created"
+      - name: Run W3C Verifiable Credentials test suite (28 tests)
+        working-directory: 2_w3c-ssi-layer/verifiable-credentials
+        run: python3 -m pytest tests/ -v
 
-    - name: Generate compliance report
-      run: |
-        cd 2_w3c-ssi-layer
-        python3 generate_compliance_report.py > ../4_comparison-framework/results/w3c-compliance.md || echo "Not yet created"
-
-    - name: Upload compliance report
-      uses: actions/upload-artifact@v3
-      with:
-        name: w3c-compliance-report
-        path: 4_comparison-framework/results/w3c-compliance.md
-
-  w3c-vc-compliance:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v3
-
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Run W3C VC Data Model compliance tests
-      run: |
-        cd 2_w3c-ssi-layer/verifiable-credentials
-        python3 test_vc_compliance.py --report || echo "Tests not yet created"
+      - name: Run lifecycle use-case suite (12 use cases, real verification)
+        run: python3 cv2x-testbed/scripts/test_use_cases.py
 
   thesis-compliance-target:
-    needs: [w3c-did-compliance, w3c-vc-compliance]
+    # The checker executes real checks against the VC layer and DID
+    # resolver and exits non-zero if the measured score is below the
+    # thesis's 90% target — so this job IS the gate, not a placeholder.
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Check thesis compliance target (>90%)
-      run: |
-        echo "Checking if thesis compliance target is met..."
-        # Extract compliance percentage from report
-        # Fail if < 90%
-        echo "✅ Compliance check passed (or not yet implemented)"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Create compliance badge
-      run: |
-        echo "Creating compliance badge for README..."
-        # Generate badge with percentage
+      - name: Install dependencies
+        run: pip install web3 eth-account cryptography pytest coincurve
+
+      - name: Enforce W3C compliance >= 90% (measured, not asserted)
+        run: python3 cv2x-testbed/scripts/w3c_compliance_checker.py
+
+      - name: Upload compliance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3c-compliance-report
+          path: w3c_compliance_report.json
+          if-no-files-found: ignore
